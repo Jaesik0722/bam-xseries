@@ -1,3 +1,14 @@
+# Copyright 2026 Jaesik Jeong
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at:
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Added to Better Actuator Models (Copyright 2025 Marc Duclusaud & Gregoire Passault)
+# to support the DYNAMIXEL X series.
+
 # Protocol 2.0 driver for the DYNAMIXEL X series (XH540, XM540, XM430).
 #
 # BAM ships a Protocol 1.0 driver (dynamixel.py) whose control-table addresses belong to the

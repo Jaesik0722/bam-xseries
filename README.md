@@ -4,6 +4,16 @@
 
 # BAM: Better Actuator Models
 
+> **This is a fork.** The identification method, friction models and fitting pipeline are the
+> work of Marc Duclusaud and Gregoire Passault, published as
+> [Better Actuator Models](https://github.com/Rhoban/bam) under the Apache License 2.0.
+> This fork adds support for the DYNAMIXEL X series (XH540-W270, XM540-W270, XM430-W350),
+> which the upstream project does not cover, and a step-by-step identification procedure for
+> them in [PROTOCOL.md](PROTOCOL.md). See [NOTICE](NOTICE) for the list of changes.
+>
+> If you use the method, cite Duclusaud et al., *Extended Friction Models for the Physics
+> Simulation of Servo Actuators*, arXiv:2410.08650.
+
 Accurate models of servo actuators are essential for the simulation of robotic systems. It is particularly important while performing Reinforcement Learning (RL) on real robots, as the precision of the model impacts directly the transferability of the learned policy.
 
 The friction model generally implemented in widely used simulators like MuJoCo or IsaacGym is the Coulomb-Viscous, which is too simplistic to accurately represent complex friction phenomena like Stribeck, load-dependence or quadratic effects (read [this article](https://arxiv.org/pdf/2410.08650v1) for more details).

@@ -1,3 +1,14 @@
+# Copyright 2026 Jaesik Jeong
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at:
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Added to Better Actuator Models (Copyright 2025 Marc Duclusaud & Gregoire Passault)
+# to support the DYNAMIXEL X series.
+
 # Actuator definitions for the DYNAMIXEL X series used on the Robinion2S humanoid:
 # XH540-W270 (legs), XM540-W270 (shoulders, elbow yaw, hip yaw) and XM430-W350 (elbow pitch).
 #

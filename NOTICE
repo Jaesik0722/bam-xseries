@@ -1,0 +1,22 @@
+bam-xseries
+
+This product includes software developed as part of Better Actuator Models (BAM),
+Copyright 2025 Marc Duclusaud and Gregoire Passault, licensed under the Apache
+License, Version 2.0. The original work is available at:
+
+    https://github.com/Rhoban/bam
+
+Modifications in this fork, Copyright 2026 Jaesik Jeong:
+
+  - bam/dynamixel/xseries.py            new: Protocol 2.0 driver for the DYNAMIXEL X series
+  - bam/dynamixel/xseries_actuator.py   new: XH540-W270, XM540-W270 and XM430-W350 models
+  - bam/actuators.py                    modified: registry entries for the three units
+  - bam/dynamixel/record.py             modified: driver selection for the X series
+  - PROTOCOL.md                         new: identification procedure for these actuators
+
+The identification method, friction models and fitting pipeline are the original
+authors' work and are unchanged. If you use them, cite:
+
+  M. Duclusaud, G. Passault, V. Padois and O. Ly,
+  "Extended Friction Models for the Physics Simulation of Servo Actuators",
+  arXiv:2410.08650, 2024.
