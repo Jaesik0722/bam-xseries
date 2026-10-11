@@ -13,6 +13,7 @@ import numpy as np
 import argparse
 import time
 from .dynamixel import DynamixelActuatorV1, DynamixelXL320
+from .xseries import DynamixelXSeries
 from bam.trajectory import *
 
 arg_parser = argparse.ArgumentParser()
@@ -31,6 +32,7 @@ if args.trajectory not in trajectories:
     raise ValueError(f"Unknown trajectory: {args.trajectory}")
 
 _XL330_MOTORS = {"xl330", "xl330i"}
+_XSERIES_MOTORS = {"xh540", "xm540", "xm430"}
 
 # XL330-specific conversion helpers
 _XL330_RADS_PER_SEC_PER_COUNT = 0.229 * (2.0 * np.pi / 60.0)
@@ -64,6 +66,16 @@ if args.motor in _XL330_MOTORS:
             c.write_goal_position(ID, goal_position)
         c.write_torque_enable(ID, torque_enable)
         c.write_position_p_gain(ID, args.kp)
+elif args.motor in _XSERIES_MOTORS:
+    dxl = DynamixelXSeries(args.port)
+
+    start = time.time()
+    while time.time() - start < 1.0:
+        goal_position, torque_enable = trajectory(0)
+        if torque_enable:
+            dxl.set_goal_position(goal_position)
+        dxl.set_torque(torque_enable)
+        dxl.set_p_gain(args.kp)
 else:
     dxl = DynamixelActuatorV1(args.port)
 

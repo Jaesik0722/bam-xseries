@@ -14,6 +14,11 @@ from .dynamixel.actuator import (
     XL330Actuator,
     XL330CurrentActuator,
 )
+from .dynamixel.xseries_actuator import (
+    XH540W270Actuator,
+    XM430W350Actuator,
+    XM540W270Actuator,
+)
 from .feetech.actuator import STS3215Actuator
 from .unitree.actuator import UnitreeGo1Actuator
 from .waveshare.actuator import ST3025Actuator
@@ -26,6 +31,11 @@ actuators = {
     "xl320": lambda: XL320Actuator(Pendulum),
     "xl330": lambda: XL330Actuator(Pendulum),
     "xl330i": lambda: XL330CurrentActuator(Pendulum),
+    # Dynamixel X series, Protocol 2.0. The firmware Position P Gain is read from each log
+    # at fit time, so the constructor default here is never the value that is used.
+    "xh540": lambda: XH540W270Actuator(Pendulum),
+    "xm540": lambda: XM540W270Actuator(Pendulum),
+    "xm430": lambda: XM430W350Actuator(Pendulum),
     # eRob actuators with custom PD controller
     "erob80_100": lambda: ErobActuator(Pendulum, damping=2.0),
     "erob80_50": lambda: ErobActuator(Pendulum, damping=1.0),
