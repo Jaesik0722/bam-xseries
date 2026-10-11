@@ -32,14 +32,16 @@ class _XSeriesActuator(VoltageControlledActuator):
 
     ``kt`` and ``R`` are initialised from the 12 V catalogue figures through
     ``kt = V / omega_noload`` and ``R = kt * V / tau_stall``, with bounds wide enough that the
-    fit is not pinned to the catalogue. A fitted value far outside these bounds means the
-    bench moved, the load was mis-measured, or ``error_gain`` is wrong.
+    fit is not pinned to the catalogue. Both are properties of the magnets and windings, so
+    they do not depend on the supply: the same starting values are right whether the bench
+    runs at 12 V or at the 14.8 V default below. A fitted value far outside these bounds means
+    the bench moved, the load was mis-measured, or ``error_gain`` is wrong.
     """
 
     #: (kt_guess, R_guess, armature_guess) and the bounds applied around them
     KT = R = ARMATURE = None
 
-    def __init__(self, testbench_class: Testbench, kp: int = 800, vin: float = 12.0):
+    def __init__(self, testbench_class: Testbench, kp: int = 800, vin: float = 14.8):
         super().__init__(
             testbench_class,
             vin=vin,

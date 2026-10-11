@@ -21,7 +21,7 @@ per actuator. Building the bench is the long pole.
 | Item | Specification | Notes |
 |---|---|---|
 | Actuators | XH540-W270, XM540-W270, XM430-W350 | one of each; they are identified separately |
-| Power supply | **12 V**, 5 A or more | XH540 draws 4.9 A at stall |
+| Power supply | **14.8 V**, 6 A or more | matches 4S nominal, which is what the robot runs; XH540 draws about 6 A at stall at this voltage |
 | Interface | U2D2 + U2D2 Power Hub Board | USB to TTL/RS-485 |
 | Aluminium profile | 20×20 or 30×30 mm, ~30 cm | the mast the actuator hangs from |
 | Bench vice or C-clamps | — | clamps the profile to the table |
@@ -87,13 +87,23 @@ in §4 and the backlash appears in the fit as extra compliance.
 ### 2.3 Wire it up
 
 ```
-12 V PSU ──► U2D2 Power Hub ──► actuator
+14.8 V PSU ──► U2D2 Power Hub ──► actuator
                    │
                  U2D2 ──► USB to PC
 ```
 
-Set the power supply to **exactly 12.0 V** and record what it reads. The identification
-assumes a known supply voltage; if it sags under load, the data is compromised (see §6.3).
+Set the power supply to **exactly 14.8 V** and record what it reads.
+
+14.8 V is the maximum rated input for all three units, and the `Max Voltage Limit` register
+(address 32) defaults to 16.0 V, so nothing has to be reconfigured and no protection has to
+be defeated. It is chosen over 12 V because it matches what the robot runs on and because the
+higher no-load speed sweeps a wider part of the torque-speed plane, which separates `kt` from
+`R` more cleanly.
+
+Use a bench supply, not a battery. What matters is not the voltage level but that it is
+**known and constant**: a pack drifting from 16.8 V down to 14 V through a session puts that
+drift into the fitted `kt` and `R`. If the supply sags under load the data is compromised
+(see §6.3).
 
 ---
 
@@ -121,28 +131,41 @@ separate them. Varying mass and length changes the inertia and the gravity torqu
 independently, which breaks the degeneracy, and varying the P gain sweeps the controller
 through different parts of its range.
 
-The tables below cover roughly 5 % to 60 % of each actuator's stall torque. The upper end
-matters: on this robot the knee and hip joints run at 35–47 % of stall in normal balancing,
-so identifying only at light loads would mean extrapolating into the regime that actually
-matters.
+The tables below cover roughly 5 % to 50 % of each actuator's stall torque **at 14.8 V**.
+The upper end matters. Measured on this robot's own policies, the knee runs at a median of
+46 % and a 95th percentile of 54 % of the 9.9 N·m figure in the URDF, which is 4.6 to
+5.4 N·m in absolute terms. The heaviest configuration below reaches 5.96 N·m, so the whole
+operating range of the real joint sits inside the identified set.
 
-### 4.1 XH540-W270 (9.9 N·m stall) and XM540-W270 (10.6 N·m stall)
+Stall torque rises with supply voltage, so the same weights correspond to lower percentages
+here than they would at 12 V:
+
+| | stall at 12 V | stall at 14.8 V |
+|---|---|---|
+| XH540-W270 | 9.9 N·m | **12.21 N·m** |
+| XM540-W270 | 10.6 N·m | **13.07 N·m** |
+| XM430-W350 | 4.1 N·m | **5.06 N·m** |
+
+### 4.1 XH540-W270 and XM540-W270
 
 Use the same set for both.
 
 | Weight | 0.10 m | 0.15 m | 0.20 m |
 |---|---|---|---|
-| 0.5 kg | 0.53 N·m (5 %) | 0.79 (8 %) | 1.06 (11 %) |
-| 1.5 kg | 1.51 (15 %) | 2.27 (23 %) | 3.02 (31 %) |
-| 3.0 kg | 2.98 (30 %) | 4.45 (45 %) | 5.92 (60 %) |
+| 0.5 kg | 0.53 N·m (4 %) | 0.79 (7 %) | 1.06 (9 %) |
+| 1.5 kg | 1.51 (12 %) | 2.27 (19 %) | 3.02 (25 %) |
+| 3.0 kg | 2.98 (24 %) | 4.47 (37 %) | 5.96 (49 %) |
 
-### 4.2 XM430-W350 (4.1 N·m stall)
+Percentages are against the XH540 stall torque; for the XM540 they are one or two points
+lower, which does not change the set.
+
+### 4.2 XM430-W350
 
 | Weight | 0.10 m | 0.15 m | 0.20 m |
 |---|---|---|---|
-| 0.2 kg | 0.24 N·m (6 %) | 0.35 (9 %) | 0.47 (11 %) |
-| 0.5 kg | 0.53 (13 %) | 0.79 (19 %) | 1.06 (26 %) |
-| 1.2 kg | 1.21 (30 %) | 1.80 (44 %) | 2.39 (58 %) |
+| 0.2 kg | 0.24 N·m (5 %) | 0.35 (7 %) | 0.47 (9 %) |
+| 0.5 kg | 0.53 (10 %) | 0.79 (16 %) | 1.06 (21 %) |
+| 1.2 kg | 1.22 (24 %) | 1.82 (36 %) | 2.43 (48 %) |
 
 Percentages are the gravity torque with the arm horizontal, assuming an 80 g arm.
 
@@ -189,7 +212,7 @@ python -m bam.dynamixel.record \
   --motor xh540 \
   --port /dev/ttyUSB0 \
   --mass 1.5 --arm-mass 0.082 --length 0.15 \
-  --kp 800 --vin 12.0 \
+  --kp 800 --vin 14.8 \
   --trajectory sin_time_square \
   --logdir logs/xh540
 ```
@@ -303,13 +326,22 @@ Fitting takes a few minutes per actuator.
 ### 8.1 Sanity check against the catalogue
 
 ```
-stall torque   = kt * V / R          should be near  9.9 N·m  (XH540-W270)
-no-load speed  = V / kt              should be near  4.08 rad/s
+stall torque   = kt * V / R
+no-load speed  = V / kt
 ```
 
-with `V = 12.0`. The starting values shipped in this repository reproduce the catalogue
-exactly, so a fitted result that lands far away is telling you something is wrong — most
-likely the mount moved, a mass or length was mis-entered, or `error_gain` is wrong (§9).
+Evaluate these at the voltage you actually used. The catalogue figures are quoted at 12 V, so
+at 14.8 V the same motor should come out higher:
+
+| | stall, 12 V | stall, **14.8 V** | no-load, 12 V | no-load, **14.8 V** |
+|---|---|---|---|---|
+| XH540-W270 | 9.9 N·m | **12.21** | 4.08 rad/s | **5.04** |
+| XM540-W270 | 10.6 | **13.07** | 3.14 | **3.88** |
+| XM430-W350 | 4.1 | **5.06** | 4.82 | **5.94** |
+
+The starting values shipped in this repository reproduce the 12 V catalogue exactly, so a
+fitted result far from the right column is telling you something is wrong — most likely the
+mount moved, a mass or length was mis-entered, or `error_gain` is wrong (§9).
 
 ### 8.2 Expected magnitudes
 
@@ -317,6 +349,10 @@ likely the mount moved, a mass or length was mis-entered, or `error_gain` is wro
 |---|---|
 | `kt` | 2–4 V/(rad/s) |
 | `R` | 3–8 Ω |
+
+`kt` and `R` are properties of the magnets and windings. They do not depend on the supply
+voltage, so the ranges above apply whichever voltage you identified at, and a model fitted at
+14.8 V predicts behaviour at 12 V or 16.8 V by substituting `V` in the equations above.
 | `armature` | 0.01–0.05 kg·m² |
 | `friction_viscous` | 0.01–0.1 N·m·s/rad |
 
@@ -380,7 +416,7 @@ your robot's firmware P gain into the stiffness your simulator should use.
 ## 11. Checklist
 
 ```
-[ ] Power supply set to 12.0 V, 5 A or more, verified under load
+[ ] Bench supply set to 14.8 V, 6 A or more, verified not to sag under the heaviest load
 [ ] Actuator body immovable when the arm is twisted by hand
 [ ] Metal horn fitted
 [ ] Arm does not visibly bend at its heaviest intended load
