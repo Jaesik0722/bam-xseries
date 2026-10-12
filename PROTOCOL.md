@@ -193,17 +193,29 @@ configurations in the set rather than only one kind.
 
 ## 5. Recording
 
-### 5.1 The four trajectories
+### 5.1 The seven trajectories
 
-Each configuration is recorded with all four. They are not interchangeable; each one isolates
-something different.
+Record every configuration with all seven. They are not interchangeable; each one reaches a
+part of the operating space the others do not. All seven ship with the tool and run for 6 s.
 
-| Trajectory | What it isolates |
-|---|---|
-| `lift_and_drop` | releases the H-bridge, so there is no back-EMF: this is what separates viscous friction from the motor term |
-| `up_and_down` | slow raising and lowering, which exposes the back-driving regime and gearbox directionality |
-| `sin_time_square` | constant amplitude, rising frequency: excites inertia, which is what identifies `armature` |
-| `sin_sin` | a large slow oscillation with a small fast one on top, covering a wide velocity range |
+| Trajectory | Motion | What it isolates |
+|---|---|---|
+| `sin_time_square` | sin(t²) | the primary trajectory: a chirp that sweeps a wide velocity range in one run |
+| `sin_sin` | sin(t)·π/2 + sin(5t)·0.5·sin(2t) | several frequencies at once, covering velocity and acceleration together |
+| `lift_and_drop` | move to −π/2, then torque off | with the H-bridge released there is no back-EMF, which is what separates viscous friction from the motor term |
+| `up_and_down` | slow cubic 0 → π/2 → 0.8·π/2 | static friction and load-dependent effects, and the back-driving regime |
+| `half_sine` | slow half-sine 0 → π/2 | the quasi-static end of the range |
+| `steps` | step changes in target | the initial acceleration after a step is τ/J, so this bears directly on `armature` |
+| `nothing` | torque disabled throughout | pure gravity response, which is the only way to check the pendulum model itself (see §6.5) |
+
+The original study used the first four. `steps` and `nothing` are included here because
+`armature` is the parameter this exercise exists to obtain and `steps` speaks to it directly,
+and because `nothing` is the one trajectory that can tell you your mass and length entries
+are wrong.
+
+A plain fixed-frequency sine is **not** worth adding: `sin_time_square` is a swept sine and
+already contains it. What improves an identification is reaching a regime the other
+trajectories miss, not re-covering one they already visit.
 
 ### 5.2 Command
 
@@ -221,14 +233,15 @@ python -m bam.dynamixel.record \
 
 ### 5.3 Order of work
 
-Per actuator: 9 load configurations × 4 P gains × 4 trajectories = **144 logs of 6 s each**,
-about 15 minutes of recording plus the time to swap weights.
+Per actuator: 9 load configurations × 4 P gains × 7 trajectories = **252 logs of 6 s each**,
+about 25 minutes of recording plus the time to swap weights.
 
 ```
 for each load configuration (weight, length):
     fit the weight, re-check the zero (§5.4)
     for kp in 100, 200, 400, 800:
-        for trajectory in lift_and_drop, up_and_down, sin_time_square, sin_sin:
+        for trajectory in sin_time_square, sin_sin, lift_and_drop, up_and_down,
+                          half_sine, steps, nothing:
             record
 ```
 
@@ -238,6 +251,8 @@ Two rules about ordering:
   rise monotonically through the session, which makes temperature indistinguishable from
   whatever else you changed. Shuffling lets you check for thermal drift afterwards.
 - **Leave the heaviest configurations until last** and let the actuator cool between them.
+  Seven trajectories at 3.0 kg × 0.20 m is nearly three minutes of near-continuous load; check
+  the temperature between trajectories, not only between configurations.
 
 ### 5.4 Zero position
 
@@ -274,7 +289,31 @@ Plot `input_volts` on the heaviest configuration. If it sags more than a few ten
 your supply is too small and every log taken at that load is biased. Fix the supply and redo
 them.
 
-### 6.4 Temperature
+### 6.4 Does the free swing match the geometry you entered?
+
+`lift_and_drop` raises the arm to −π/2 and then disables torque, so the rest of that log is a
+plain pendulum. Its period depends only on the mass, the length and gravity — no actuator
+parameter enters — which makes it an independent check on the two numbers you measured by
+hand.
+
+For small swings,
+
+```
+T0 = 2π · sqrt( (m·L² + m_arm·L²/3) / ((m·L + m_arm·L/2)·g) )
+```
+
+The release is from 90°, where the true period is about **1.18·T0**; by the time the swing
+has decayed to roughly 30° it is within 2 % of `T0`. So measure the period of the *later*
+swings in the log and compare against `T0`.
+
+A disagreement beyond a few per cent means `--mass` or `--length` is wrong, and every other
+log from that configuration is wrong with it.
+
+`nothing` is a weaker version of the same check: it disables torque with the target at zero,
+so unless the arm happens to be displaced when it starts, it simply sits still. Its value is
+in confirming that a stationary arm really is stationary — if it drifts, something is loose.
+
+### 6.5 Temperature
 
 Note the start and end temperature of each log. If anything exceeded 70 °C, set those logs
 aside and look at them separately — the actuator was not the same device it was when cold.
@@ -427,6 +466,7 @@ your robot's firmware P gain into the stiffness your simulator should use.
 [ ] Configuration order randomised
 [ ] Temperature logged, nothing over 70 °C
 [ ] Logs inspected before fitting (motion, decay, supply voltage)
+[ ] free-swing period in `lift_and_drop` checked against the measured mass and length (§6.4)
 [ ] Fitted stall torque and no-load speed compared against the catalogue
 [ ] kt and R checked for drift across P gains (§9)
 ```
