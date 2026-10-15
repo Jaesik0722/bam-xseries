@@ -118,6 +118,10 @@ assumed.
 | `--mass` | mass of the weight, in kg | weigh the weight and its bolt together |
 | `--length` | distance from the **rotation axis** to the **centre of mass of the weight**, in metres | measure from the output shaft centre to the middle of the weight |
 
+If the arm is not a uniform rod -- a light shaft with a heavy fixture at the end, for
+instance -- the values above are not the raw ones. See [MEASUREMENTS.md](MEASUREMENTS.md) for
+what to read off the CAD model and how to convert it.
+
 `--length` is *not* the length of the arm. If the weight is a 40 mm tall cylinder whose near
 face sits 130 mm from the axis, then `--length` is 0.150 m, not 0.130 m.
 
