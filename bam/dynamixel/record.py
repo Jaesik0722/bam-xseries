@@ -13,7 +13,7 @@ import numpy as np
 import argparse
 import time
 from .dynamixel import DynamixelActuatorV1, DynamixelXL320
-from .xseries import DynamixelXSeries
+from .xseries import DynamixelXSeries, check_registers
 from bam.trajectory import *
 
 arg_parser = argparse.ArgumentParser()
@@ -25,7 +25,10 @@ arg_parser.add_argument("--logdir", type=str, required=True)
 arg_parser.add_argument("--trajectory", type=str, default="lift_and_drop")
 arg_parser.add_argument("--motor", type=str, required=True)
 arg_parser.add_argument("--kp", type=int, default=32)
-arg_parser.add_argument("--vin", type=float, default=15.0)
+arg_parser.add_argument("--vin", type=float, default=None,
+                        help="supply voltage used by the fit; required for the X series")
+arg_parser.add_argument("--unit", type=str, default=None,
+                        help="label of the physical servo; required for the X series")
 args = arg_parser.parse_args()
 
 if args.trajectory not in trajectories:
@@ -33,6 +36,17 @@ if args.trajectory not in trajectories:
 
 _XL330_MOTORS = {"xl330", "xl330i"}
 _XSERIES_MOTORS = {"xh540", "xm540", "xm430"}
+
+if args.motor in _XSERIES_MOTORS:
+    # The fit reads the supply voltage from this argument, not from the measured channel,
+    # so a silent default would bias kt and R. The unit label is what keeps logs from
+    # different servos of the same model apart.
+    if args.vin is None:
+        arg_parser.error("--vin is required for the X series (set it to the supply voltage)")
+    if args.unit is None:
+        arg_parser.error("--unit is required for the X series (label of the servo)")
+elif args.vin is None:
+    args.vin = 15.0
 
 # XL330-specific conversion helpers
 _XL330_RADS_PER_SEC_PER_COUNT = 0.229 * (2.0 * np.pi / 60.0)
@@ -76,6 +90,11 @@ elif args.motor in _XSERIES_MOTORS:
             dxl.set_goal_position(goal_position)
         dxl.set_torque(torque_enable)
         dxl.set_p_gain(args.kp)
+
+    registers = dxl.read_registers()
+    register_problems = check_registers(registers)
+    for problem in register_problems:
+        print(f"WARNING: {problem}")
 else:
     dxl = DynamixelActuatorV1(args.port)
 
@@ -99,6 +118,10 @@ data = {
     "trajectory": args.trajectory,
     "entries": [],
 }
+if args.motor in _XSERIES_MOTORS:
+    data["unit"] = args.unit
+    data["registers"] = registers
+    data["register_problems"] = register_problems
 
 while time.time() - start < trajectory.duration:
     t = time.time() - start
@@ -160,3 +183,9 @@ else:
 date = datetime.datetime.now().strftime("%Y-%m-%d_%Hh%Mm%S")
 filename = f"{args.logdir}/{date}.json"
 json.dump(data, open(filename, "w"))
+
+if args.motor in _XSERIES_MOTORS:
+    measured = float(np.median([entry["input_volts"] for entry in data["entries"]]))
+    if abs(measured - args.vin) > 0.3:
+        print(f"WARNING: --vin {args.vin} V but the servo measured {measured:.1f} V "
+              "(median); the fit will use --vin")

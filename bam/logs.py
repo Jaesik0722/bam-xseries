@@ -82,8 +82,14 @@ class Logs:
         batch: dict = {"entries": []}
 
         for key in self.logs[0]:
-            if key != "entries":
-                batch[key] = np.array([log[key] for log in self.logs])
+            if key == "entries":
+                continue
+            # Only per-log scalars (mass, length, kp, vin, ...) are vectorised. Metadata such
+            # as the X series register snapshot is a dict or list, may be missing from older
+            # logs, and is not used by the simulator.
+            values = [log.get(key) for log in self.logs]
+            if all(isinstance(v, (int, float, str, bool)) for v in values):
+                batch[key] = np.array(values)
 
         entries_min_length = min([len(log["entries"]) for log in self.logs])
         entries_max_length = max([len(log["entries"]) for log in self.logs])

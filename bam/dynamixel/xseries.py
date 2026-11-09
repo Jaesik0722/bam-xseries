@@ -29,6 +29,81 @@ ADDR_TEMPERATURE_LIMIT = 31   # 1 byte, 1 degC
 ADDR_PWM_LIMIT = 36           # 2 bytes, 0.113 %
 ADDR_CURRENT_LIMIT = 38       # 2 bytes, 2.69 mA
 
+# Every register that changes how the firmware turns a goal position into a PWM duty, plus
+# the ones that identify the unit and the bus. The recorder only writes the P gain and
+# Torque Enable, so everything else is whatever is stored in the servo; it is snapshotted
+# into each log so that the identification can be tied to the configuration it ran under.
+# (name, address, size in bytes, signed)
+SNAPSHOT_REGISTERS = [
+    ("model_number", 0, 2, False),
+    ("firmware_version", 6, 1, False),
+    ("id", 7, 1, False),
+    ("baud_rate", 8, 1, False),
+    ("return_delay_time", 9, 1, False),      # 2 us per count
+    ("drive_mode", 10, 1, False),            # bit 2: time-based profile
+    ("operating_mode", 11, 1, False),        # 3 = position control
+    ("homing_offset", 20, 4, True),
+    ("temperature_limit", 31, 1, False),
+    ("max_voltage_limit", 32, 2, False),     # 0.1 V
+    ("min_voltage_limit", 34, 2, False),     # 0.1 V
+    ("pwm_limit", 36, 2, False),             # 885 = 100 %
+    ("current_limit", 38, 2, False),         # 2.69 mA
+    ("velocity_limit", 44, 4, False),        # 0.229 rev/min
+    ("max_position_limit", 48, 4, False),
+    ("min_position_limit", 52, 4, False),
+    ("shutdown", 63, 1, False),
+    ("status_return_level", 68, 1, False),
+    ("velocity_i_gain", 76, 2, False),
+    ("velocity_p_gain", 78, 2, False),
+    ("position_d_gain", 80, 2, False),
+    ("position_i_gain", 82, 2, False),
+    ("position_p_gain", 84, 2, False),
+    ("feedforward_2nd_gain", 88, 2, False),
+    ("feedforward_1st_gain", 90, 2, False),
+    ("bus_watchdog", 98, 1, False),
+    ("goal_pwm", 100, 2, True),
+    ("goal_current", 102, 2, True),
+    ("profile_acceleration", 108, 4, False),
+    ("profile_velocity", 112, 4, False),
+]
+
+# Values the identification assumes. A mismatch does not stop anything, but it means the
+# fitted model describes a different controller from the one in xseries_actuator.py.
+#   pwm_limit            -> X_PWM_LIMIT in xseries_actuator.py, enters error_gain
+#   operating_mode       -> the model is a voltage-controlled position loop
+#   position_i/d, ff     -> the model has a pure P loop
+#   profile_*            -> a non-zero profile makes the firmware smooth the goal, which the
+#                           model does not simulate
+EXPECTED_REGISTERS = {
+    "operating_mode": 3,
+    "pwm_limit": 885,
+    "position_i_gain": 0,
+    "position_d_gain": 0,
+    "feedforward_1st_gain": 0,
+    "feedforward_2nd_gain": 0,
+    "profile_acceleration": 0,
+    "profile_velocity": 0,
+}
+
+
+def check_registers(registers: dict) -> list[str]:
+    """Return one message per register that differs from what the model assumes.
+
+    ``position_p_gain`` is not checked: the recorder sets it per log.
+    """
+    problems = []
+    for name, expected in EXPECTED_REGISTERS.items():
+        if name in registers and registers[name] != expected:
+            problems.append(f"{name} = {registers[name]} (model assumes {expected})")
+    drive_mode = registers.get("drive_mode")
+    if drive_mode is not None and drive_mode & 0b100:
+        problems.append(f"drive_mode = {drive_mode}: time-based profile is enabled")
+    goal_pwm, pwm_limit = registers.get("goal_pwm"), registers.get("pwm_limit")
+    if goal_pwm is not None and pwm_limit is not None and abs(goal_pwm) < pwm_limit:
+        problems.append(
+            f"goal_pwm = {goal_pwm} is below pwm_limit = {pwm_limit} and may cap the duty")
+    return problems
+
 # --- RAM ------------------------------------------------------------------------------
 ADDR_TORQUE_ENABLE = 64       # 1 byte
 ADDR_POSITION_D_GAIN = 80     # 2 bytes
@@ -123,6 +198,14 @@ class DynamixelXSeries:
 
     def read_temperature_limit(self) -> int:
         return self._read(ADDR_TEMPERATURE_LIMIT, 1)
+
+    def read_registers(self) -> dict:
+        """Read every register in SNAPSHOT_REGISTERS. Reads only; nothing is written."""
+        registers = {}
+        for name, addr, size, signed in SNAPSHOT_REGISTERS:
+            value = self._read(addr, size)
+            registers[name] = _signed(value, 8 * size) if signed else value
+        return registers
 
     # -- logging ------------------------------------------------------------------------
     def read_data(self) -> dict:

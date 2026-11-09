@@ -210,7 +210,7 @@ part of the operating space the others do not. All seven ship with the tool and 
 | `up_and_down` | slow cubic 0 → π/2 → 0.8·π/2 | static friction and load-dependent effects, and the back-driving regime |
 | `half_sine` | slow half-sine 0 → π/2 | the quasi-static end of the range |
 | `steps` | step changes in target | the initial acceleration after a step is τ/J, so this bears directly on `armature` |
-| `nothing` | torque disabled throughout | pure gravity response, which is the only way to check the pendulum model itself (see §6.5) |
+| `nothing` | torque disabled throughout | pure gravity response, which is the only way to check the pendulum model itself (see §6.4) |
 
 The original study used the first four. `steps` and `nothing` are included here because
 `armature` is the parameter this exercise exists to obtain and `steps` speaks to it directly,
@@ -223,17 +223,49 @@ trajectories miss, not re-covering one they already visit.
 
 ### 5.2 Command
 
+**Label every servo** with a short name written on its case (`xh540_A`, `xh540_B`, …) and
+use that name for `--unit` and for the log directory. Logs of different units of the same
+model must never share a directory: the fit reads every file in it as the same actuator.
+
+**Before the first log of a unit, save its registers.** The recorder writes only the P gain
+and Torque Enable; everything else (Operating Mode, PWM Limit, Profile Velocity and
+Acceleration, I and D gains, feedforward) is whatever is stored in the servo, and the model
+assumes particular values for them (§9). This reads the control table without writing
+anything and prints any register that differs from what the model assumes:
+
+```bash
+python -m bam.dynamixel.dump_registers --port /dev/ttyUSB0 \
+  --unit xh540_A --out registers/xh540_A.json
+```
+
+Fix any register it reports **before** recording, and record the fix in your notes.
+
+Then, per log:
+
 ```bash
 python -m bam.dynamixel.record \
-  --motor xh540 \
+  --motor xh540 --unit xh540_A \
   --port /dev/ttyUSB0 \
   --mass 1.5 --arm-mass 0.082 --length 0.15 \
   --kp 800 --vin 14.8 \
   --trajectory sin_time_square \
-  --logdir logs/xh540
+  --logdir logs_raw/xh540_A
 ```
 
-`--motor` is one of `xh540`, `xm540`, `xm430`.
+`--motor` is one of `xh540`, `xm540`, `xm430`. `--vin` and `--unit` are required for these
+models. `--vin` is the voltage **the fit will use**; the voltage the servo measures is logged
+but not used by the fit, so set `--vin` to the supply voltage you actually read, and the
+recorder warns if the two differ by more than 0.3 V. Each log also carries a snapshot of the
+registers it was recorded under.
+
+To record all P gains and all seven trajectories of one load configuration in one go:
+
+```bash
+python -m bam.dynamixel.all_record --motor xh540 --unit xh540_A \
+  --mass 1.5 --arm-mass 0.082 --length 0.15 --vin 14.8 \
+  --logdir logs_raw/xh540_A
+# add the robot's own gain if it is not 100, 200, 400 or 800:  --kp 100 200 400 800 <robot kp>
+```
 
 ### 5.3 Order of work
 
@@ -277,6 +309,20 @@ to check whether that affected your session.
 
 Do not skip this. Fitting bad data produces plausible-looking numbers.
 
+Every check below except the visual ones in §6.1 and §6.2 is automated. Run it on the raw
+logs after each session, while the bench is still set up:
+
+```bash
+python -m bam.check_logs --logdir logs_raw/xh540_A --csv checks_xh540_A.csv
+```
+
+It flags, per log: `--vin` against the measured voltage, supply sag (§6.3), temperature
+over 70 °C (§6.5), an arm that did not move or a `nothing` log that did, the free-swing
+period against the geometry (§6.4), registers that differ from what the model assumes, and
+gaps in the sampling. It then lists every (load, kp, trajectory) cell that is missing or
+recorded twice. **Do not delete flagged logs**; move them to a separate directory and keep
+the CSV, so that what was excluded and why is on record.
+
 ### 6.1 Did the arm move?
 
 Open a few logs and plot `position`. A configuration where the controller saturated and the
@@ -308,10 +354,11 @@ T0 = 2π · sqrt( (m·L² + m_arm·L²/3) / ((m·L + m_arm·L/2)·g) )
 
 The release is from 90°, where the true period is about **1.18·T0**; by the time the swing
 has decayed to roughly 30° it is within 2 % of `T0`. So measure the period of the *later*
-swings in the log and compare against `T0`.
+swings in the log and compare against `T0`. `bam.check_logs` times every cycle below 60° and
+corrects each one for its amplitude exactly, so it does not need the swing to decay to 30°.
 
-A disagreement beyond a few per cent means `--mass` or `--length` is wrong, and every other
-log from that configuration is wrong with it.
+A disagreement beyond **3 %** means `--mass` or `--length` is wrong, and every other log from
+that configuration is wrong with it.
 
 `nothing` is a weaker version of the same check: it disables torque with the target at zero,
 so unless the arm happens to be displaced when it starts, it simply sits still. Its value is
@@ -330,28 +377,62 @@ aside and look at them separately — the actuator was not the same device it wa
 
 ## 7. Fitting
 
-```bash
-python -m bam.fit \
-  --logdir logs/xh540 \
-  --actuator xh540 \
-  --method cmaes \
-  --model m4 \
-  --trials 4000 \
-  --output params/xh540_m4.json
-```
+### 7.1 Resample
 
-`m4` is the model that performed best for Dynamixel units in the original study: Coulomb and
-viscous friction, plus Stribeck and load-dependent terms. Start there. If you want to see
-whether the complexity is earning its place, fit `m1` as well and compare the validation
-error.
-
-Hold out one P gain for validation rather than reporting the fit error:
+The recorder samples at whatever rate the bus allows; the fit needs a fixed time step. Resample
+the logs that passed §6 into a separate directory first (the fit fails on raw logs):
 
 ```bash
-  --validation_kp 400
+mkdir -p logs/xh540_A
+python -m bam.process --raw logs_raw/xh540_A --logdir logs/xh540_A --dt 0.005
 ```
 
-Fitting takes a few minutes per actuator.
+### 7.2 Fit m4 and m1, holding out kp 400
+
+```bash
+for model in m4 m1; do
+  python -m bam.fit \
+    --logdir logs/xh540_A \
+    --actuator xh540 \
+    --method cmaes \
+    --model $model \
+    --trials 4000 \
+    --validation_kp 400 \
+    --output params/xh540_A_$model.json | tee fit_xh540_A_$model.txt
+done
+```
+
+**Use `m4`.** It is the model that performed best for Dynamixel units in the original study:
+Coulomb and viscous friction, plus Stribeck and load-dependent terms. `m1` (Coulomb and
+viscous only) is fitted alongside it as the baseline: the improvement of m4 over m1 on the
+held-out kp is reported, so both validation scores are needed. Do not substitute `m5` or `m6`;
+their direction-dependent terms are not identifiable from this bench and tend to pin one
+coefficient to zero.
+
+The fit prints `Validation score (kp = 400)` while it runs: the mean absolute position error
+on the held-out gain, in radians. Keep the last printed value (the `tee` above saves it).
+
+### 7.3 Fit each P gain on its own
+
+This is the drift check of §9. It needs no validation split:
+
+```bash
+for kp in 100 200 400 800; do
+  python -m bam.fit --logdir logs/xh540_A --actuator xh540 --method cmaes \
+    --model m4 --trials 4000 --only_kp $kp \
+    --output params/xh540_A_m4_kp$kp.json
+done
+```
+
+Fitting takes a few minutes per run.
+
+### 7.4 What to hand in
+
+For each unit: the raw logs (`logs_raw/<unit>/`, including the excluded ones in their own
+directory), the register dump (`registers/<unit>.json`), the `bam.check_logs` CSV, the
+geometry sheet (MEASUREMENTS.md values, and mass, arm mass and length per configuration),
+the supply voltage you read, the fitted JSON files of §7.2 and §7.3 with their printed
+output, and the commit hash of this repository you fitted with (`git rev-parse HEAD`).
 
 ---
 
@@ -392,12 +473,15 @@ mount moved, a mass or length was mis-entered, or `error_gain` is wrong (§9).
 |---|---|
 | `kt` | 2–4 V/(rad/s) |
 | `R` | 3–8 Ω |
+| `armature` | 0.01–0.05 kg·m² |
+| `friction_viscous` | 0.01–0.1 N·m·s/rad |
 
 `kt` and `R` are properties of the magnets and windings. They do not depend on the supply
 voltage, so the ranges above apply whichever voltage you identified at, and a model fitted at
 14.8 V predicts behaviour at 12 V or 16.8 V by substituting `V` in the equations above.
-| `armature` | 0.01–0.05 kg·m² |
-| `friction_viscous` | 0.01–0.1 N·m·s/rad |
+
+A parameter that sits on the edge of its search range (the fit prints `min` and `max` for
+each) was not identified; report it rather than using it.
 
 For context, the URDF currently models the neck link as 9 × 10⁻⁶ kg·m² of inertia driven by a
 10 N·m actuator. The `armature` term is roughly a thousand times larger and is the dominant
@@ -419,7 +503,12 @@ error_gain = (counts_per_rev / 2π) / (KP_DIVISOR × PWM_LIMIT)
 The e-Manual gives `KP_DIVISOR = 128`. The BAM authors found that the XL330 actually behaves
 as if it were 256. **This has not been verified on the X540/X430 series.**
 
-How to tell: fit each P gain separately and compare `kt` and `R` across them. If `error_gain`
+`PWM_LIMIT` is the register value the model assumes (885, the factory default). If the
+register dump of §5.2 shows a different `pwm_limit`, a non-zero profile, I or D gain, or an
+Operating Mode other than 3, the model does not describe the controller that was recorded,
+and `kt` and `R` will absorb the difference.
+
+How to tell: fit each P gain separately (§7.3) and compare `kt` and `R` across them. If `error_gain`
 is correct, those values are the same whatever the gain, because they are properties of the
 motor. If they drift systematically with the P gain, `error_gain` is off by a constant
 factor — change `X_KP_DIVISOR` in `bam/dynamixel/xseries_actuator.py` to 256 and refit. If
@@ -435,21 +524,28 @@ robot: it still runs its own firmware position loop. What changes is the simulat
 
 ```python
 # at asset creation
-props["armature"] = 0.027        # identified
-props["friction"] = 0.05         # identified
+props["armature"] = armature     # identified
 
-# each control step
-tau_cmd   = kt * V / R - kt**2 * dq / R
-tau_avail = tau_stall * (1 - clamp(dq * sign(tau_cmd) / omega_noload, 0, 1))
-tau       = clamp(tau_cmd, -tau_avail, tau_avail)
+# each physics step (the firmware position loop, as BAM models it)
+duty  = clamp(error_gain * kp * (q_target - q), -1, 1)
+tau_m = kt * (duty * V - kt * dq) / R          # motor torque at the output shaft
+# friction from the identified model (frictionloss, damping) is then applied on top
 ```
 
-The effective PD gains follow from the identified parameters and the P gain your robot runs:
+`kt` already refers to the output shaft (it includes the gear ratio), so `tau_m` must not be
+multiplied by the gear ratio again.
+
+Linearising the motor term away from duty saturation gives the effective PD gains for the
+P gain your robot runs and the supply voltage it sees:
 
 ```
-effective stiffness = error_gain × kp × kt / R
-effective damping   = kt² / R                    (this is the back-EMF term)
+effective stiffness = error_gain × kp × V_supply × kt / R
+effective damping   = kt² / R                    (this is the back-EMF term; the identified
+                                                  friction_viscous adds to it)
 ```
+
+The stiffness depends on the supply voltage: a battery running down from 16.8 V to 14 V
+lowers it by about 17 %.
 
 So the bench does not hand you a stiffness directly — it hands you the function that turns
 your robot's firmware P gain into the stiffness your simulator should use.
@@ -466,11 +562,19 @@ your robot's firmware P gain into the stiffness your simulator should use.
 [ ] Arm clears everything through ±90° from vertical
 [ ] Arm mass, weight mass and axis-to-weight-centre distance all weighed and measured
 [ ] Robot's own Position P Gain read off and included in the gain list
+[ ] Servo labelled; --unit and log directory use the label
+[ ] Registers dumped before the first log; nothing reported, or the fix noted
+[ ] --vin set to the supply voltage actually read
 [ ] Zero set with torque disabled and the arm hanging free
 [ ] Configuration order randomised
 [ ] Temperature logged, nothing over 70 °C
 [ ] Logs inspected before fitting (motion, decay, supply voltage)
+[ ] bam.check_logs run, CSV kept, flagged logs moved aside (not deleted)
 [ ] free-swing period in `lift_and_drop` checked against the measured mass and length (§6.4)
+[ ] Logs resampled with bam.process before fitting (§7.1)
+[ ] m4 and m1 fitted with kp 400 held out; both validation scores kept (§7.2)
 [ ] Fitted stall torque and no-load speed compared against the catalogue
-[ ] kt and R checked for drift across P gains (§9)
+[ ] No fitted parameter on the edge of its range, or the ones that are reported
+[ ] kt and R checked for drift across P gains (§7.3, §9)
+[ ] Everything in §7.4 handed in, with the commit hash
 ```

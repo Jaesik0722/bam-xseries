@@ -39,6 +39,12 @@ arg_parser.add_argument("--reset_period", default=None, type=float)
 arg_parser.add_argument("--wandb", action="store_true")
 arg_parser.add_argument("--set", type=str, default="")
 arg_parser.add_argument("--validation_kp", type=int, default=0)
+arg_parser.add_argument(
+    "--only_kp",
+    type=int,
+    default=0,
+    help="fit only the logs recorded at this P gain (checks kt and R for drift across gains)",
+)
 arg_parser.add_argument("--eval", action="store_true")
 args = arg_parser.parse_args()
 
@@ -50,6 +56,13 @@ if not args.eval:
     json.dump({}, open(params_json_filename, "w"))
 
 logs = Logs(args.logdir)
+if args.only_kp > 0:
+    if args.validation_kp > 0:
+        raise ValueError("--only_kp and --validation_kp cannot be combined")
+    logs = logs.split(args.only_kp)
+    print(f"{len(logs.logs)} logs kept at kp = {args.only_kp}")
+    if len(logs.logs) == 0:
+        raise ValueError(f"No logs at kp = {args.only_kp}")
 if not args.eval and args.validation_kp > 0:
     validation_logs = logs.split(args.validation_kp)
     validation_batch = validation_logs.make_batch()
@@ -175,6 +188,10 @@ def monitor(study, trial):
 
         print()
         message.bright(f"[Trial {trial_number}, Best score: {best_value}]")
+        if args.validation_kp > 0:
+            message.bright(
+                f"[Validation score (kp = {args.validation_kp}): {val_best_value}]"
+            )
         print(
             message.emphasis(f"Best params found (saved to {params_json_filename}): ")
         )
