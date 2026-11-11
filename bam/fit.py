@@ -48,11 +48,11 @@ arg_parser.add_argument(
 arg_parser.add_argument("--eval", action="store_true")
 args = arg_parser.parse_args()
 
+# Json params file
+params_json_filename = args.output
+if not params_json_filename.endswith(".json"):
+    params_json_filename = f"output/params_{params_json_filename}.json"
 if not args.eval:
-    # Json params file
-    params_json_filename = args.output
-    if not params_json_filename.endswith(".json"):
-        params_json_filename = f"output/params_{params_json_filename}.json"
     json.dump({}, open(params_json_filename, "w"))
 
 logs = Logs(args.logdir)
@@ -145,6 +145,20 @@ def sync_params_to_files():
     wandb.save(dst, base_path=wandb_run.dir, policy="now")
 
 
+def save_best(study) -> dict:
+    """Write the study's best parameters (plus fixed ones) to the output JSON."""
+    data = deepcopy(study.best_params)
+    model = make_model()
+    for key, parameter in model.get_parameters().items():
+        if key not in data:
+            data[key] = parameter.value
+    data["model"] = args.model
+    data["actuator"] = args.actuator
+    with open(params_json_filename, "w") as f:
+        json.dump(data, f)
+    return data
+
+
 def monitor(study, trial):
     global last_log, last_params_sync, wandb_run
     elapsed = time.time() - last_log
@@ -163,7 +177,6 @@ def monitor(study, trial):
         )
     if elapsed > 0.2:
         last_log = time.time()
-        data = deepcopy(study.best_params)
         trial_number = trial.number
         best_value = study.best_value
         wandb_log = {
@@ -171,15 +184,8 @@ def monitor(study, trial):
             "optim/trial_number": trial_number,
         }
 
-        model = make_model()
-        model_parameters = model.get_parameters()
-        for key in model_parameters:
-            if key not in data:
-                data[key] = model_parameters[key].value
-        data["model"] = args.model
-        data["actuator"] = args.actuator
-
-        json.dump(data, open(params_json_filename, "w"))
+        data = save_best(study)
+        model_parameters = make_model().get_parameters()
 
         if args.validation_kp > 0:
             val_model = load_model(params_json_filename)
@@ -220,7 +226,7 @@ def monitor(study, trial):
 
 
 if args.eval:
-    model = load_model("params.json")
+    model = load_model(params_json_filename)
     print(f"Score: {compute_scores(model, logs)}")
 else:
     study_name = f"study_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -251,6 +257,7 @@ else:
         if enable_monitoring:
             callbacks = [monitor]
         study.optimize(objective, n_trials=args.trials, n_jobs=1, callbacks=callbacks)
+        return study
 
     if args.workers > 1:
         optuna.create_study(study_name=study_name, storage=study_url, sampler=sampler)
@@ -260,7 +267,18 @@ else:
         p = Process(target=optuna_run, args=(False,))
         p.start()
 
-    optuna_run(True)
+    study = optuna_run(True)
+
+    # The monitor saves at most every 0.2 s, so the last improvement may not be on disk.
+    # Save the final best unconditionally and report its scores.
+    save_best(study)
+    print()
+    message.bright(f"[Final: {len(study.trials)} trials, best score: {study.best_value}]")
+    if args.validation_kp > 0:
+        final_validation = compute_score(load_model(params_json_filename), validation_batch)
+        message.bright(
+            f"[Final validation score (kp = {args.validation_kp}): {final_validation}]")
+    print(f"Saved to {params_json_filename}")
 
     # Final flush: make sure the last best params reach the Files tab.
     if args.wandb and wandb_run is not None:

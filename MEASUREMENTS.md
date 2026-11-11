@@ -57,17 +57,16 @@ Weigh them individually if they are not identical, and keep them labelled.
 ## D. What to compute, per configuration
 
 A configuration is a choice of which slots are filled. BAM's pendulum has two physical
-properties, the gravity torque and the inertia about the axis, and three numbers to set them
-(`--mass`, `--arm-mass`, `--length`). Choose them so that **both** match the real arm:
+properties, the gravity torque and the inertia about the axis. Choose the recorder values so
+that **both** match the real arm. The simplest exact choice is the classical equivalent
+simple pendulum: one point mass, no rod.
 
 ```
 moment  = sum(m_i * r_i) + m_arm * d_arm                  # kg·m, sets the gravity torque
 inertia = sum(m_i * r_i^2 + I_block_i) + I_arm            # kg·m², about the axis
-L       = sum(m_i * r_i) / sum(m_i)                       # mass-weighted block radius
-a       = moment / L
-b       = inertia / L^2
-mass     = 3*b - 2*a
-arm_mass = 6*(a - b)
+--length   = inertia / moment
+--mass     = moment^2 / inertia
+--arm-mass = 0
 ```
 
 The tool does this and prints the recorder arguments:
@@ -77,8 +76,11 @@ python -m bam.equivalent_pendulum --arm-mass <m_arm> --arm-com <d_arm> \
   --arm-inertia <I_arm> --block <m_1>:<r_1> --block <m_2>:<r_2>
 ```
 
-`arm_mass` may come out negative. That is expected, because it is an equivalent value, not a
-physical one, and `bam.fit` and `bam.check_logs` accept it.
+`--length` is then an equivalent length, slightly longer than the block radius, not a
+distance you can measure on the arm. That is expected. With `--arm-mass 0` the MuJoCo
+testbench builds the same body as the fit. With `--length <value>` the tool keeps a length of
+your choosing instead; `--arm-mass` may then be negative, which the fit accepts but the
+MuJoCo testbench does not reproduce.
 
 **Why not the mean radius.** Blocks at different radii carry `sum(m_i·r_i²)`, which is
 larger than `m_load·L²` at their mean radius. An earlier version of this sheet matched only
@@ -87,9 +89,10 @@ into `armature`, and since the shortfall differs between configurations, the res
 compromise rather than a constant offset. The tool prints the shortfall of those torque-only
 values too.
 
-**Logs recorded with the earlier values** can still be used. The gravity torque was right,
-so only `mass` and `arm-mass` need replacing. Write corrected copies into a new directory,
-keep the originals untouched, note the change, and then run `bam.process` on the copies.
+**Logs recorded with the earlier values** can still be used: the recorded motion does not
+depend on what was typed. Replace `mass`, `arm-mass` and `length` with the tool's output in
+copies written to a new directory, keep the originals untouched, note the change, and then
+run `bam.process` on the copies.
 
 ---
 

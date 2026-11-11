@@ -148,8 +148,10 @@ class Simulator:
             goal = np.stack([e["goal_position"] for e in log["entries"]])
             delayed_goal = fractional_delay_shift(goal, cmd_delay.value, dt_scalar)
 
+        # dt is a per-log vector in batched rollouts; all logs share the same value.
+        dt_step = float(np.asarray(dt).reshape(-1)[0])
         for k, entry in enumerate(log["entries"]):
-            reset_period_t += dt
+            reset_period_t += dt_step
             if reset_period is not None and reset_period_t > reset_period:
                 reset_period_t = 0.0
                 self.reset(entry["position"], entry["speed"])

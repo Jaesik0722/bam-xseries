@@ -109,12 +109,16 @@ class MujocoController:
         """
         self.q_target[self.dof_to_q_target[name]] = q_target
 
-    def update(self):
+    def update(self, torque_enable=True):
         """
         Update the controlled actuator(s) data:
         - Torque to apply
         - Friction parameters
         - Damping
+
+        :param torque_enable: Whether the actuators are powered (scalar or one per
+            actuator). With torque off the applied torque is zero, and so is the motor
+            torque seen by the load-dependent friction, as in :mod:`bam.simulate`.
         """
         q = self.mujoco_data.qpos[self.qpos_indexes]
         dq = self.mujoco_data.qvel[self.dof_indexes]
@@ -158,7 +162,7 @@ class MujocoController:
         self.control = control
 
         # Computing the applied torque
-        torque = act.compute_torque(control, True, q, dq)
+        torque = act.compute_torque(control, torque_enable, q, dq)
 
         # Restore original vin
         if self.vin_drop_resistance is not None:
@@ -167,7 +171,10 @@ class MujocoController:
         # Applying the torque
         self.mujoco_data.ctrl[self.act_indexes] = torque
 
-        # Updating friction parameters
+        # Updating friction parameters. The external torque comes from the previous
+        # solve (qfrc_bias and qfrc_constraint are only known after a step), which is
+        # an approximation of bam.simulate, where gravity is evaluated at the current
+        # state; the motor torque below is the one applied in this step, as there.
         torque_external = (
             -self.mujoco_data.qfrc_bias[self.dof_indexes]
             + self.mujoco_data.qfrc_constraint[self.dof_indexes]
@@ -177,9 +184,11 @@ class MujocoController:
         efc_id_repeated = np.repeat(
             [self.mujoco_data.efc_id], len(self.actuator), axis=0
         )
-        # Repeat the indexes (now N_id x N_efc)
+        # Repeat the indexes (now N_id x N_efc). For a DOF-friction constraint efc_id
+        # is a DOF index, which differs from the joint index as soon as the model has
+        # a free joint (a floating base) or ball joints before this one.
         id_repeated = np.repeat(
-            [self.joint_indexes], len(self.mujoco_data.efc_id), axis=0
+            [self.dof_indexes], len(self.mujoco_data.efc_id), axis=0
         ).T
         # Do the batched test (element wise)
         selector = efc_id_repeated == id_repeated
@@ -191,7 +200,10 @@ class MujocoController:
         friction_force = np.sum(self.mujoco_data.efc_force * selector, axis=1)
 
         torque_external -= friction_force
-        torque_actuator = self.mujoco_data.qfrc_actuator[self.dof_indexes]
+        # The motor torque of this step, not qfrc_actuator (that is the previous
+        # step's, one step late, which matters most when torque is switched).
+        torque_actuator = np.broadcast_to(np.asarray(torque, dtype=float),
+                                          np.shape(self.dof_indexes))
 
         # Updating friction parameters
         frictionloss, damping = self.model.compute_frictions(
@@ -344,7 +356,7 @@ class Simulator:
         for i, (mujoco_model, mujoco_data, controller) in enumerate(self.instances):
             mujoco_model.opt.timestep = dt
             controller.set_q_target(self.actuator, goal_position[i])
-            controller.update()
+            controller.update(torque_enable[i])
             if not torque_enable[i]:
                 mujoco_data.ctrl[controller.act_indexes] = 0.0
             mujoco.mj_step(mujoco_model, mujoco_data)

@@ -9,6 +9,8 @@
 import json
 import datetime
 import os
+import sys
+import tempfile
 import numpy as np
 import argparse
 import time
@@ -66,6 +68,14 @@ def convert_xl330_pwm_to_duty(raw: float) -> float:
 
 trajectory = trajectories[args.trajectory]
 
+# Fail before the arm moves, not after: the log directory must exist and be writable.
+try:
+    os.makedirs(args.logdir, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=args.logdir):
+        pass
+except OSError as e:
+    raise SystemExit(f"cannot write to --logdir {args.logdir}: {e}")
+
 # ── Controller initialisation ────────────────────────────────────────────────
 if args.motor in _XL330_MOTORS:
     from rustypot import Xl330PyController
@@ -107,7 +117,6 @@ else:
         dxl.set_p_gain(args.kp)
 
 # ── Recording loop ───────────────────────────────────────────────────────────
-start = time.time()
 data = {
     "mass": args.mass,
     "arm-mass": args.arm_mass,
@@ -123,66 +132,91 @@ if args.motor in _XSERIES_MOTORS:
     data["registers"] = registers
     data["register_problems"] = register_problems
 
-while time.time() - start < trajectory.duration:
-    t = time.time() - start
-    goal_position, new_torque_enable = trajectory(t)
-    if new_torque_enable != torque_enable:
-        if args.motor in _XL330_MOTORS:
-            c.write_torque_enable(ID, new_torque_enable)
-        else:
-            dxl.set_torque(new_torque_enable)
-        torque_enable = new_torque_enable
-        time.sleep(0.001)
-    if torque_enable:
-        if args.motor in _XL330_MOTORS:
-            c.write_goal_position(ID, goal_position)
-        else:
-            dxl.set_goal_position(goal_position)
-        time.sleep(0.001)
 
-    t0 = time.time() - start
-
+def write_goal(position):
     if args.motor in _XL330_MOTORS:
-        entry = {}
-        entry["position"] = c.read_present_position(ID)[0]
-        entry["speed"] = convert_xl330_velocity(c.read_present_velocity(ID)[0])
-        entry["load"] = convert_xl330_pwm_to_duty(c.read_present_pwm(ID)[0])
-        entry["input_volts"] = c.read_present_input_voltage(ID)[0] / 10.0
-        entry["temp"] = c.read_present_temperature(ID)[0]
+        c.write_goal_position(ID, position)
     else:
-        entry = dxl.read_data()
+        dxl.set_goal_position(position)
 
-    t1 = time.time() - start
 
-    entry["timestamp"] = (t0 + t1) / 2.0
-    entry["goal_position"] = goal_position
-    entry["torque_enable"] = torque_enable
-    data["entries"].append(entry)
-
-# ── Return to zero ───────────────────────────────────────────────────────────
-goal_position = data["entries"][-1]["position"]
-return_dt = 0.01
-max_variation = return_dt * 1.0
-while abs(goal_position) > 0:
-    if goal_position > 0:
-        goal_position = max(0, goal_position - max_variation)
-    else:
-        goal_position = min(0, goal_position + max_variation)
+def write_torque(enable):
     if args.motor in _XL330_MOTORS:
-        c.write_goal_position(ID, goal_position)
+        c.write_torque_enable(ID, enable)
     else:
-        dxl.set_goal_position(goal_position)
-    time.sleep(return_dt)
+        dxl.set_torque(enable)
 
-if args.motor in _XL330_MOTORS:
-    c.write_torque_enable(ID, False)
-else:
-    dxl.set_torque(False)
+
+aborted = None
+start = time.time()
+try:
+    while time.time() - start < trajectory.duration:
+        t = time.time() - start
+        goal_position, new_torque_enable = trajectory(t)
+        if new_torque_enable != torque_enable:
+            write_torque(new_torque_enable)
+            torque_enable = new_torque_enable
+            time.sleep(0.001)
+        if torque_enable:
+            write_goal(goal_position)
+            time.sleep(0.001)
+
+        t0 = time.time() - start
+
+        if args.motor in _XL330_MOTORS:
+            entry = {}
+            entry["position"] = c.read_present_position(ID)[0]
+            entry["speed"] = convert_xl330_velocity(c.read_present_velocity(ID)[0])
+            entry["load"] = convert_xl330_pwm_to_duty(c.read_present_pwm(ID)[0])
+            entry["input_volts"] = c.read_present_input_voltage(ID)[0] / 10.0
+            entry["temp"] = c.read_present_temperature(ID)[0]
+        else:
+            entry = dxl.read_data()
+
+        t1 = time.time() - start
+
+        entry["timestamp"] = (t0 + t1) / 2.0
+        entry["goal_position"] = goal_position
+        entry["torque_enable"] = torque_enable
+        data["entries"].append(entry)
+except BaseException as e:  # communication error, Ctrl-C, ...
+    aborted = e
+    data["aborted"] = f"{type(e).__name__}: {e}"
+    print(f"ERROR: recording aborted after {len(data['entries'])} samples: "
+          f"{data['aborted']}", file=sys.stderr)
+
+# ── Return to zero, then release ─────────────────────────────────────────────
+# Lower the arm under position control before disabling torque, so a loaded arm is not
+# dropped. Each step is attempted even if the previous one failed.
+try:
+    goal_position = data["entries"][-1]["position"] if data["entries"] else 0.0
+    return_dt = 0.01
+    max_variation = return_dt * 1.0
+    while abs(goal_position) > 0:
+        if goal_position > 0:
+            goal_position = max(0, goal_position - max_variation)
+        else:
+            goal_position = min(0, goal_position + max_variation)
+        write_goal(goal_position)
+        time.sleep(return_dt)
+except BaseException as e:
+    print(f"ERROR: return to zero failed: {type(e).__name__}: {e}", file=sys.stderr)
+try:
+    write_torque(False)
+except BaseException as e:
+    print(f"ERROR: could not disable torque: {type(e).__name__}: {e}", file=sys.stderr)
 
 # ── Save ─────────────────────────────────────────────────────────────────────
+# An aborted log is kept, under a name that keeps it out of a normal fit directory.
 date = datetime.datetime.now().strftime("%Y-%m-%d_%Hh%Mm%S")
-filename = f"{args.logdir}/{date}.json"
-json.dump(data, open(filename, "w"))
+suffix = "_aborted" if aborted is not None else ""
+filename = f"{args.logdir}/{date}{suffix}.json"
+with open(filename, "w") as f:
+    json.dump(data, f)
+print(f"saved {filename} ({len(data['entries'])} samples)")
+
+if aborted is not None:
+    sys.exit(1)
 
 if args.motor in _XSERIES_MOTORS:
     measured = float(np.median([entry["input_volts"] for entry in data["entries"]]))

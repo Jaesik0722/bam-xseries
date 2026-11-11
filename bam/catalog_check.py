@@ -13,11 +13,19 @@
 
 The catalogue quotes output-shaft figures, so the model's friction is included:
 
-  stall torque   the largest load torque the motor can start to lift from rest at full
-                 duty: kt*V/R minus the static friction budget at that load
-  no-load speed  the speed at full duty where the motor torque equals the friction
+  breakaway torque  the largest load torque the motor can start to lift from rest at full
+                    duty: kt*V/R minus the static friction budget at that load. This is not
+                    what ROBOTIS calls stall torque (the maximum momentary torque), so the
+                    comparison is coarse.
+  no-load speed     the speed the unloaded output reaches from rest at full duty, simulated
+                    with the fitted friction (bam.simulate's static-friction rule). With a
+                    Stribeck term the torque balance can have several roots, and the one a
+                    root search finds need not be the one the motor reaches; every root is
+                    listed so that the case is visible.
 
-kt*V/R and V/kt, the frictionless motor values, are printed alongside for reference.
+kt*V/R and V/kt, the frictionless motor values, are printed alongside for reference. The
++-20 % comparison is the M1 criterion of the SIMPAT plan; a miss calls for a look at the fit,
+not for discarding it on that ground alone.
 
     python -m bam.catalog_check --params params/xh540_A_m4.json --vin 14.8
 """
@@ -79,17 +87,40 @@ def predicted_stall(model, kt: float, R: float, vin: float) -> float:
     return _bisect(margin, 0.0, tau_m)
 
 
-def predicted_noload_speed(model, kt: float, R: float, vin: float) -> float:
-    """Speed at full duty and no load where the motor torque meets the friction."""
+def noload_margin(model, kt, R, vin, speed):
+    """Motor torque left after friction at full duty, no load and this speed."""
+    tau_m = kt * (vin - kt * speed) / R
+    frictionloss, damping = model.compute_frictions(tau_m, 0.0, speed)
+    return tau_m - frictionloss - damping * speed
 
-    def margin(speed):
+
+def noload_equilibria(model, kt: float, R: float, vin: float, samples=4000) -> list:
+    """Every speed in (0, V/kt) where the torque balance crosses zero."""
+    speeds = np.linspace(0.0, vin / kt, samples)
+    margins = [noload_margin(model, kt, R, vin, w) for w in speeds]
+    roots = []
+    for k in range(1, samples):
+        if (margins[k - 1] > 0) != (margins[k] > 0):
+            roots.append(_bisect(lambda w: noload_margin(model, kt, R, vin, w),
+                                 speeds[k - 1], speeds[k])
+                         if margins[k - 1] > 0 else
+                         _bisect(lambda w: -noload_margin(model, kt, R, vin, w),
+                                 speeds[k - 1], speeds[k]))
+    return roots
+
+
+def predicted_noload_speed(model, kt: float, R: float, vin: float, armature: float,
+                           duration=3.0, dt=1e-4) -> float:
+    """Speed reached from rest at full duty with no load (bam.simulate's friction rule)."""
+    speed = 0.0
+    for _ in range(int(duration / dt)):
         tau_m = kt * (vin - kt * speed) / R
         frictionloss, damping = model.compute_frictions(tau_m, 0.0, speed)
-        return tau_m - frictionloss - damping * speed
-
-    if margin(0.0) <= 0:
-        return 0.0
-    return _bisect(margin, 0.0, vin / kt)
+        tau_stop = (armature / dt) * speed + tau_m
+        friction = -np.sign(tau_stop) * min(abs(tau_stop),
+                                            frictionloss + damping * abs(speed))
+        speed += (tau_m + friction) / armature * dt
+    return float(speed)
 
 
 def main():
@@ -112,14 +143,16 @@ def main():
 
     stall_cat, speed_cat = catalogue_at(actuator, args.vin)
     stall = predicted_stall(model, kt, R, args.vin)
-    speed = predicted_noload_speed(model, kt, R, args.vin)
+    armature = model.actuator.get_extra_inertia()
+    speed = predicted_noload_speed(model, kt, R, args.vin, armature)
+    roots = noload_equilibria(model, kt, R, args.vin)
 
     print(f"{args.params}: {actuator} {data['model']}, kt {kt:.3f}, R {R:.3f}, "
           f"at {args.vin} V\n")
     print(f"{'':16}{'model':>10}{'catalogue':>11}{'diff':>9}{'frictionless':>15}")
     failed = False
     for name, value, reference, ideal, unit in [
-        ("stall torque", stall, stall_cat, kt * args.vin / R, "N m"),
+        ("breakaway/stall", stall, stall_cat, kt * args.vin / R, "N m"),
         ("no-load speed", speed, speed_cat, args.vin / kt, "rad/s"),
     ]:
         diff = value / reference - 1
@@ -127,8 +160,12 @@ def main():
         failed |= bool(mark)
         print(f"{name:16}{value:10.3f}{reference:11.3f}{100 * diff:+8.1f}%"
               f"{ideal:15.3f}  {unit}{mark}")
-    print(f"\ntolerance +-{100 * args.tolerance:.0f} % against the catalogue "
-          f"({'fail' if failed else 'pass'})")
+    if len(roots) > 1:
+        print("\nnote: the no-load torque balance has several roots, "
+              + ", ".join(f"{w:.3f}" for w in roots)
+              + " rad/s; the speed above is the one reached from rest")
+    print(f"\nM1 criterion +-{100 * args.tolerance:.0f} % against the catalogue: "
+          f"{'outside' if failed else 'inside'} (see PROTOCOL.md 8.1 before acting on it)")
 
 
 if __name__ == "__main__":

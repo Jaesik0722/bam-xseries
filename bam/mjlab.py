@@ -236,6 +236,10 @@ class BamActuator(Actuator):
 
         self.kp_scale: torch.Tensor | None = None
         self.kd_scale: torch.Tensor | None = None
+        # Per-env torque enable, (N, 1). The actuator's output is zeroed where it is 0,
+        # and so is the motor torque the load-dependent friction sees, as in
+        # bam.simulate. Default: powered.
+        self.torque_enable: torch.Tensor | None = None
         self.default_kp_scale: torch.Tensor | None = None
         self.default_kd_scale: torch.Tensor | None = None
 
@@ -354,6 +358,7 @@ class BamActuator(Actuator):
         num_joints = len(self._dof_ids)
         self.kp_scale = torch.ones(num_envs, 1, dtype=torch.float32, device=device)
         self.kd_scale = torch.ones(num_envs, 1, dtype=torch.float32, device=device)
+        self.torque_enable = torch.ones(num_envs, 1, dtype=torch.float32, device=device)
         self.default_kp_scale = self.kp_scale.clone()
         self.default_kd_scale = self.kd_scale.clone()
 
@@ -514,11 +519,18 @@ class BamActuator(Actuator):
                     )
 
                     if bam.quadratic:
-                        # m6 — quadratic term; directional: motor-side vs external-side
+                        # m6 — quadratic term, exactly as bam.model.Model.compute_frictions:
+                        # only when the motor and external torques have opposite signs,
+                        # motor-side when |motor| > |external|, external-side when
+                        # |external| > |motor|, and nothing when they are equal.
                         abs_ext = torch.abs(external_torque)
                         abs_mot = torch.abs(motor_torque)
-                        drive_mask = (abs_mot > abs_ext).to(motor_torque.dtype)
-                        backdrive_mask = 1.0 - drive_mask
+                        dtype = motor_torque.dtype
+                        enable = (
+                            torch.sign(external_torque) != torch.sign(motor_torque)
+                        ).to(dtype)
+                        drive_mask = (abs_ext < abs_mot).to(dtype)
+                        backdrive_mask = (abs_ext > abs_mot).to(dtype)
                         quad_term = (
                             drive_mask
                             * bam.load_friction_external_quad.value
@@ -526,7 +538,7 @@ class BamActuator(Actuator):
                             + backdrive_mask
                             * bam.load_friction_motor_quad.value
                             * abs_mot**2
-                        )
+                        ) * enable
                         frictionloss = frictionloss + stribeck_coeff * quad_term
             else:
                 # m3/m4 — non-directional gearbox torque
@@ -658,11 +670,10 @@ class BamActuator(Actuator):
         assert self._data is not None and self._dof_ids is not None
         assert self._mjwarp_model is not None
 
-        # Actuator torque applied on the PREVIOUS solve (lagged one step). The BAM
-        # friction budget uses this (not the freshly-computed motor_torque) as the
-        # motor-side load, and the battery voltage-drop model combines it with the
-        # previous duty cycle to estimate the supply current. Mirrors
-        # bam.mujoco.MujocoController.
+        # Actuator torque applied on the PREVIOUS solve (lagged one step). Only the
+        # battery voltage-drop model uses it, combined with the previous duty cycle, to
+        # estimate the supply current (the friction budget uses this step's torque).
+        # Mirrors bam.mujoco.MujocoController.
         prev_actuator_torque = self._as_tensor(self._data.qfrc_actuator)[
             :, self._dof_ids
         ]  # (N, J)
@@ -709,6 +720,7 @@ class BamActuator(Actuator):
             cmd.position_target, cmd.pos, scaled_vel, self._dt
         )
         motor_torque = act.compute_torque(control, True, cmd.pos, scaled_vel)
+        motor_torque = motor_torque * self.torque_enable
 
         # ── 3. External torque (gravity + Coriolis + constraints) ─────────────
         # The external load on the gearbox is the gravity/Coriolis bias plus the
@@ -741,8 +753,12 @@ class BamActuator(Actuator):
         # Viscous part → damping. MuJoCo's constraint solver then performs the
         # static-friction clipping (BAM Algorithm 1) itself, so we do NOT add a
         # passive friction torque to the returned motor torque.
+        # The motor-side load is this step's motor torque, as in bam.simulate (the
+        # fitting simulator). The previous solve's qfrc_actuator is one step late, which
+        # matters most when torque is switched on or off. The external torque above is
+        # still the previous solve's: it is only known after a step.
         frictionloss = self._compute_friction_budget(
-            prev_actuator_torque, external_torque, stribeck_coeff
+            motor_torque, external_torque, stribeck_coeff
         )  # (N, J)
         self._write_frictions(frictionloss, friction_viscous)
 
@@ -939,6 +955,9 @@ class Simulator:
 
             goal = torch.as_tensor(goals[k], dtype=f32, device=dev).unsqueeze(1)
             entity.set_joint_position_target(goal)
+            bam_act.torque_enable[:] = torch.as_tensor(
+                torque_en[k], dtype=f32, device=dev
+            ).unsqueeze(1)
             scene.write_data_to_sim()
 
             # Zero the applied torque where the log has torque disabled.

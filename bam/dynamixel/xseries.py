@@ -234,7 +234,9 @@ class DynamixelXSeries:
         pwm = _signed(word(ADDR_PRESENT_PWM - base, 2), 16) / PWM_FULL_SCALE
         current = _signed(word(ADDR_PRESENT_CURRENT - base, 2), 16) * CURRENT_UNIT_A
         velocity = _signed(word(ADDR_PRESENT_VELOCITY - base, 4), 32) * VELOCITY_UNIT_RAD_S
-        position = word(ADDR_PRESENT_POSITION - base, 4)
+        # Signed: below count 0 (possible after a homing offset or in extended modes) the
+        # register wraps to 2**32 - n.
+        position = _signed(word(ADDR_PRESENT_POSITION - base, 4), 32)
         position = 2 * np.pi * ((position / COUNTS_PER_REV) - 0.5)
         volts = word(ADDR_PRESENT_INPUT_VOLTAGE - base, 2) * VOLTAGE_UNIT_V
         temp = word(ADDR_PRESENT_TEMPERATURE - base, 1)

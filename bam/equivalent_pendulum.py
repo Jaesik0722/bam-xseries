@@ -16,17 +16,25 @@ BAM's pendulum is a point mass `mass` at `length` on a uniform rod of mass `arm_
     gravity torque  (mass + arm_mass/2) * length * g * sin(q)
     inertia         (mass + arm_mass/3) * length**2
 
-Two equations, so `mass` and `arm_mass` can be chosen to match both the real gravity torque
-and the real inertia for any `length`. Matching only the torque, as the earlier sheet did,
-leaves an inertia error that the fit puts into `armature`, and since the error differs between
-load configurations it cannot be removed afterwards by a constant.
+Both the real gravity torque and the real inertia can be matched exactly. By default the tool
+uses the classical equivalent simple pendulum: all mass at the point where a single point
+mass reproduces both, so `arm_mass` is 0,
+
+    length = inertia / moment,   mass = moment**2 / inertia
+
+(moment = sum of m*r over the arm and blocks, inertia about the axis). Every simulator then
+builds the same body, including the MuJoCo testbench (bam.testbench_mujoco), which needs a
+positive mass and a non-negative inertia about the centre of mass. Matching only the torque,
+as the earlier sheet did, leaves an inertia error that the fit puts into `armature`; since the
+error differs between load configurations it cannot be removed afterwards by a constant.
 
     python -m bam.equivalent_pendulum --arm-mass 0.210 --arm-com 0.118 \\
         --arm-inertia 0.00395 --block 0.512:0.135 --block 0.512:0.165
 
 Each --block is mass:radius or mass:radius:inertia_about_its_own_centre (kg, m, kg m^2).
-`arm_mass` may come out negative; bam.fit and bam.check_logs accept that (only gravity torque
-and inertia enter), but the MuJoCo testbench needs a positive total mass.
+With --length the tool instead keeps that length and solves for `mass` and `arm_mass`, which
+may then be negative: bam.fit and bam.check_logs accept that (only gravity torque and inertia
+enter), but the MuJoCo testbench does not reproduce the inertia, so the default is preferred.
 """
 
 import argparse
@@ -38,13 +46,13 @@ def equivalent(arm_mass, arm_com, arm_inertia, blocks, length=None):
     """Return (mass, arm_mass, length) matching the real gravity torque and inertia.
 
     :param blocks: list of (mass, radius, inertia_about_own_centre)
-    :param length: the length to use; default is the mass-weighted radius of the blocks
+    :param length: the length to use; default is the equivalent simple pendulum length
+        inertia / moment, for which arm_mass is 0
     """
-    m_load = sum(m for m, _, _ in blocks)
     moment = sum(m * r for m, r, _ in blocks) + arm_mass * arm_com       # kg m
     inertia = sum(m * r**2 + i for m, r, i in blocks) + arm_inertia      # kg m^2
     if length is None:
-        length = sum(m * r for m, r, _ in blocks) / m_load
+        return moment**2 / inertia, 0.0, inertia / moment
     a = moment / length          # = mass + arm_mass/2
     b = inertia / length**2      # = mass + arm_mass/3
     return 3 * b - 2 * a, 6 * (a - b), length
@@ -68,7 +76,8 @@ def main():
     parser.add_argument("--block", action="append", required=True,
                         help="mass:radius[:inertia_about_own_centre], once per block fitted")
     parser.add_argument("--length", type=float, default=None,
-                        help="default: mass-weighted radius of the blocks")
+                        help="keep this length (arm_mass may turn negative); default: the "
+                             "equivalent simple pendulum, arm_mass 0")
     args = parser.parse_args()
 
     blocks = []
@@ -88,8 +97,9 @@ def main():
     print(f"--mass {mass:.5f} --arm-mass {arm_mass:.5f} --length {length:.5f}\n")
     print(f"real gravity torque, arm horizontal: {true_torque:.4f} N m")
     print(f"real inertia about the axis:         {true_inertia:.6f} kg m^2")
-    if arm_mass < 0:
-        print("note: arm_mass is negative; fine for bam.fit, not for the MuJoCo testbench")
+    if arm_mass < 0 or mass < 0:
+        print("note: a negative mass; fine for bam.fit, but the MuJoCo testbench will not "
+              "reproduce the inertia (drop --length)")
 
     m0, a0, l0 = torque_only(args.arm_mass, args.arm_com, blocks)
     i0 = (m0 + a0 / 3) * l0**2

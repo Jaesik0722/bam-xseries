@@ -8,6 +8,8 @@
 
 import argparse
 import os
+import subprocess
+import sys
 import time
 
 
@@ -52,12 +54,16 @@ else:
         args.vin = 15.0
     trajectories = ["sin_sin", "lift_and_drop", "up_and_down", "sin_time_square"]
 
-command_base = f"uv run -m bam.dynamixel.record --mass {args.mass} --arm-mass {args.arm_mass} --length {args.length}"
-command_base += (
-    f" --port {args.port} --logdir {args.logdir} --motor {args.motor} --vin {args.vin}"
-)
+# The recorder runs in the interpreter running this script, so it uses the same installed
+# package whether that came from pip or uv.
+command_base = [
+    sys.executable, "-m", "bam.dynamixel.record",
+    "--mass", str(args.mass), "--arm-mass", str(args.arm_mass), "--length", str(args.length),
+    "--port", args.port, "--logdir", args.logdir, "--motor", args.motor,
+    "--vin", str(args.vin),
+]
 if args.unit is not None:
-    command_base += f" --unit {args.unit}"
+    command_base += ["--unit", args.unit]
 
 
 for kp in kps:
@@ -72,8 +78,13 @@ for kp in kps:
             myobj.save("/tmp/message.mp3")
             os.system("mpg321 /tmp/message.mp3")
 
-        command = f"{command_base} --kp {kp} --trajectory {trajectory}"
-        os.system(command)
+        command = command_base + ["--kp", str(kp), "--trajectory", trajectory]
+        result = subprocess.run(command)
+        if result.returncode != 0:
+            # Stop rather than run the rest of the grid against a fault (bus error, wrong
+            # port, servo in hardware error). Logs already saved are kept.
+            sys.exit(f"stopped: kp {kp}, {trajectory} failed with exit code "
+                     f"{result.returncode}; fix the cause and record the remaining cells")
 
         if trajectory == "sin_time_square":
             time.sleep(3)
