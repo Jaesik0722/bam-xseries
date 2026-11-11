@@ -76,47 +76,6 @@ try:
 except OSError as e:
     raise SystemExit(f"cannot write to --logdir {args.logdir}: {e}")
 
-# ── Controller initialisation ────────────────────────────────────────────────
-if args.motor in _XL330_MOTORS:
-    from rustypot import Xl330PyController
-
-    c = Xl330PyController(args.port, baudrate=1000000, timeout=0.01)
-    ID = 1
-
-    start = time.time()
-    while time.time() - start < 1.0:
-        goal_position, torque_enable = trajectory(0)
-        if torque_enable:
-            c.write_goal_position(ID, goal_position)
-        c.write_torque_enable(ID, torque_enable)
-        c.write_position_p_gain(ID, args.kp)
-elif args.motor in _XSERIES_MOTORS:
-    dxl = DynamixelXSeries(args.port)
-
-    start = time.time()
-    while time.time() - start < 1.0:
-        goal_position, torque_enable = trajectory(0)
-        if torque_enable:
-            dxl.set_goal_position(goal_position)
-        dxl.set_torque(torque_enable)
-        dxl.set_p_gain(args.kp)
-
-    registers = dxl.read_registers()
-    register_problems = check_registers(registers)
-    for problem in register_problems:
-        print(f"WARNING: {problem}")
-else:
-    dxl = DynamixelActuatorV1(args.port)
-
-    start = time.time()
-    while time.time() - start < 1.0:
-        goal_position, torque_enable = trajectory(0)
-        if torque_enable:
-            dxl.set_goal_position(goal_position)
-        dxl.set_torque(torque_enable)
-        dxl.set_p_gain(args.kp)
-
-# ── Recording loop ───────────────────────────────────────────────────────────
 data = {
     "mass": args.mass,
     "arm-mass": args.arm_mass,
@@ -129,8 +88,8 @@ data = {
 }
 if args.motor in _XSERIES_MOTORS:
     data["unit"] = args.unit
-    data["registers"] = registers
-    data["register_problems"] = register_problems
+
+c = dxl = None  # set once the bus is open; the shutdown below only runs if it is
 
 
 def write_goal(position):
@@ -147,9 +106,43 @@ def write_torque(enable):
         dxl.set_torque(enable)
 
 
+# Initialisation and recording share one protected block: whatever fails from the moment
+# the bus is open, the arm is lowered, torque is disabled and the log is saved.
 aborted = None
-start = time.time()
+torque_enable = False
 try:
+    # ── Controller initialisation ────────────────────────────────────────────
+    if args.motor in _XL330_MOTORS:
+        from rustypot import Xl330PyController
+
+        c = Xl330PyController(args.port, baudrate=1000000, timeout=0.01)
+        ID = 1
+    elif args.motor in _XSERIES_MOTORS:
+        dxl = DynamixelXSeries(args.port)
+    else:
+        dxl = DynamixelActuatorV1(args.port)
+
+    start = time.time()
+    while time.time() - start < 1.0:
+        goal_position, torque_enable = trajectory(0)
+        if torque_enable:
+            write_goal(goal_position)
+        write_torque(torque_enable)
+        if args.motor in _XL330_MOTORS:
+            c.write_position_p_gain(ID, args.kp)
+        else:
+            dxl.set_p_gain(args.kp)
+
+    if args.motor in _XSERIES_MOTORS:
+        registers = dxl.read_registers()
+        register_problems = check_registers(registers)
+        for problem in register_problems:
+            print(f"WARNING: {problem}")
+        data["registers"] = registers
+        data["register_problems"] = register_problems
+
+    # ── Recording loop ───────────────────────────────────────────────────────
+    start = time.time()
     while time.time() - start < trajectory.duration:
         t = time.time() - start
         goal_position, new_torque_enable = trajectory(t)
@@ -187,27 +180,38 @@ except BaseException as e:  # communication error, Ctrl-C, ...
 
 # ── Return to zero, then release ─────────────────────────────────────────────
 # Lower the arm under position control before disabling torque, so a loaded arm is not
-# dropped. Each step is attempted even if the previous one failed.
-try:
-    goal_position = data["entries"][-1]["position"] if data["entries"] else 0.0
-    return_dt = 0.01
-    max_variation = return_dt * 1.0
-    while abs(goal_position) > 0:
-        if goal_position > 0:
-            goal_position = max(0, goal_position - max_variation)
-        else:
-            goal_position = min(0, goal_position + max_variation)
-        write_goal(goal_position)
-        time.sleep(return_dt)
-except BaseException as e:
-    print(f"ERROR: return to zero failed: {type(e).__name__}: {e}", file=sys.stderr)
-try:
-    write_torque(False)
-except BaseException as e:
-    print(f"ERROR: could not disable torque: {type(e).__name__}: {e}", file=sys.stderr)
+# dropped. Each step is attempted even if the previous one failed, and every failure is
+# recorded: a servo left powered must not look like a clean run.
+shutdown_errors = []
+if c is not None or dxl is not None:
+    try:
+        goal_position = data["entries"][-1]["position"] if data["entries"] else 0.0
+        return_dt = 0.01
+        max_variation = return_dt * 1.0
+        while abs(goal_position) > 0:
+            if goal_position > 0:
+                goal_position = max(0, goal_position - max_variation)
+            else:
+                goal_position = min(0, goal_position + max_variation)
+            write_goal(goal_position)
+            time.sleep(return_dt)
+    except BaseException as e:
+        shutdown_errors.append(f"return to zero: {type(e).__name__}: {e}")
+    try:
+        write_torque(False)
+    except BaseException as e:
+        shutdown_errors.append(f"disable torque: {type(e).__name__}: {e}")
+for error in shutdown_errors:
+    print(f"ERROR: {error}", file=sys.stderr)
+if shutdown_errors:
+    data["shutdown_errors"] = shutdown_errors
+    print("ERROR: the servo may still be powered; disable torque or cut the supply "
+          "before touching the arm", file=sys.stderr)
 
 # ── Save ─────────────────────────────────────────────────────────────────────
-# An aborted log is kept, under a name that keeps it out of a normal fit directory.
+# A log is always kept. An aborted one is named so that it stays out of a normal fit
+# directory; a complete log whose shutdown failed keeps its normal name (the data are
+# good) but carries shutdown_errors, and the exit code is non-zero either way.
 date = datetime.datetime.now().strftime("%Y-%m-%d_%Hh%Mm%S")
 suffix = "_aborted" if aborted is not None else ""
 filename = f"{args.logdir}/{date}{suffix}.json"
@@ -217,6 +221,8 @@ print(f"saved {filename} ({len(data['entries'])} samples)")
 
 if aborted is not None:
     sys.exit(1)
+if shutdown_errors:
+    sys.exit(2)
 
 if args.motor in _XSERIES_MOTORS:
     measured = float(np.median([entry["input_volts"] for entry in data["entries"]]))

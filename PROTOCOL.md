@@ -278,11 +278,20 @@ python -m bam.dynamixel.all_record --motor xh540 --unit xh540_A \
 # add the robot's own gain if it is not 100, 200, 400 or 800:  --kp 100 200 400 800 <robot kp>
 ```
 
-The recorder checks that `--logdir` can be written before the arm moves. If a recording fails
-part-way (a bus error, Ctrl-C), it still lowers the arm, disables torque, and saves what it
-has as `<date>_aborted.json`, then exits with an error; `all_record` stops at the first such
-failure instead of running the rest of the grid. Move aborted logs out of the directory
-(`bam.check_logs` flags them) and record the missing cells again.
+The recorder checks that `--logdir` can be written before the arm moves. From the moment the
+bus is open (initialisation included), any failure is handled the same way:
+
+- **the recording fails** (a bus error during initialisation or recording, Ctrl-C): the arm
+  is lowered, torque is disabled, what was recorded is saved as `<date>_aborted.json`, and
+  the recorder exits with code 1;
+- **the recording completed but lowering the arm or disabling torque failed**: the log is
+  saved under its normal name with a `shutdown_errors` entry, the recorder prints that the
+  servo may still be powered, and exits with code 2. **Disable torque or cut the supply
+  before touching the arm.**
+
+`all_record` stops at the first non-zero exit instead of running the rest of the grid.
+`bam.check_logs` flags aborted logs (move them out of the directory and record the missing
+cells again) and notes logs with `shutdown_errors` (their data are complete).
 
 ### 5.3 Order of work
 
@@ -459,6 +468,8 @@ python -m bam.process --raw logs_raw/xh540_A --logdir logs/xh540_A --dt 0.005
 ```
 
 ### 7.2 Fit m4 and m1, holding out kp 400
+
+`bam.fit` creates the folder of `--output` (`params/` below) if it does not exist.
 
 ```bash
 for model in m4 m1; do

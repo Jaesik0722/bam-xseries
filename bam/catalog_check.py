@@ -110,17 +110,27 @@ def noload_equilibria(model, kt: float, R: float, vin: float, samples=4000) -> l
 
 
 def predicted_noload_speed(model, kt: float, R: float, vin: float, armature: float,
-                           duration=3.0, dt=1e-4) -> float:
-    """Speed reached from rest at full duty with no load (bam.simulate's friction rule)."""
-    speed = 0.0
-    for _ in range(int(duration / dt)):
+                           dt=1e-4, window=0.5, max_time=60.0,
+                           rtol=1e-4) -> tuple[float, bool]:
+    """Speed reached from rest at full duty with no load (bam.simulate's friction rule).
+
+    Integrates until the speed changes by less than `rtol` (relative) over `window`
+    seconds, up to `max_time`. Returns (speed, converged).
+    """
+    speed, reference = 0.0, None
+    steps_per_window = int(round(window / dt))
+    for step in range(1, int(max_time / dt) + 1):
         tau_m = kt * (vin - kt * speed) / R
         frictionloss, damping = model.compute_frictions(tau_m, 0.0, speed)
         tau_stop = (armature / dt) * speed + tau_m
         friction = -np.sign(tau_stop) * min(abs(tau_stop),
                                             frictionloss + damping * abs(speed))
         speed += (tau_m + friction) / armature * dt
-    return float(speed)
+        if step % steps_per_window == 0:
+            if reference is not None and abs(speed - reference) <= rtol * max(abs(speed), 1e-9):
+                return float(speed), True
+            reference = speed
+    return float(speed), False
 
 
 def main():
@@ -144,7 +154,7 @@ def main():
     stall_cat, speed_cat = catalogue_at(actuator, args.vin)
     stall = predicted_stall(model, kt, R, args.vin)
     armature = model.actuator.get_extra_inertia()
-    speed = predicted_noload_speed(model, kt, R, args.vin, armature)
+    speed, converged = predicted_noload_speed(model, kt, R, args.vin, armature)
     roots = noload_equilibria(model, kt, R, args.vin)
 
     print(f"{args.params}: {actuator} {data['model']}, kt {kt:.3f}, R {R:.3f}, "
@@ -160,6 +170,10 @@ def main():
         failed |= bool(mark)
         print(f"{name:16}{value:10.3f}{reference:11.3f}{100 * diff:+8.1f}%"
               f"{ideal:15.3f}  {unit}{mark}")
+    if not converged:
+        print("\nnote: the no-load simulation had not settled after 60 s; the speed above "
+              "is a lower bound, not a steady state")
+        failed = True
     if len(roots) > 1:
         print("\nnote: the no-load torque balance has several roots, "
               + ", ".join(f"{w:.3f}" for w in roots)

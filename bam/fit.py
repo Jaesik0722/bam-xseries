@@ -53,6 +53,8 @@ params_json_filename = args.output
 if not params_json_filename.endswith(".json"):
     params_json_filename = f"output/params_{params_json_filename}.json"
 if not args.eval:
+    # Fail now rather than after the study if the output cannot be written.
+    os.makedirs(os.path.dirname(os.path.abspath(params_json_filename)), exist_ok=True)
     json.dump({}, open(params_json_filename, "w"))
 
 logs = Logs(args.logdir)
@@ -249,7 +251,9 @@ else:
 
     def optuna_run(enable_monitoring=True):
         if args.workers > 1:
-            study = optuna.load_study(study_name=study_name, storage=study_url)
+            study = optuna.load_study(
+                study_name=study_name, storage=study_url, sampler=sampler
+            )
         else:
             study = optuna.create_study(sampler=sampler)
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -263,11 +267,23 @@ else:
         optuna.create_study(study_name=study_name, storage=study_url, sampler=sampler)
 
     # Running the other workers
+    workers = []
     for k in range(args.workers - 1):
         p = Process(target=optuna_run, args=(False,))
         p.start()
+        workers.append(p)
 
     study = optuna_run(True)
+
+    # The other workers write to the same storage; wait for them, then read the study
+    # back so that the best trial of any worker is the one saved.
+    for p in workers:
+        p.join()
+    failed = [p.exitcode for p in workers if p.exitcode != 0]
+    if failed:
+        print(message.yellow(f"WARNING: {len(failed)} worker(s) exited with {failed}"))
+    if args.workers > 1:
+        study = optuna.load_study(study_name=study_name, storage=study_url)
 
     # The monitor saves at most every 0.2 s, so the last improvement may not be on disk.
     # Save the final best unconditionally and report its scores.

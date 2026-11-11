@@ -147,6 +147,14 @@ def check_log(path: str, args, model=None) -> dict:
     with open(path) as f:
         log = json.load(f)
     entries = log["entries"]
+    if len(entries) < 2:
+        reason = log.get("aborted", "no samples")
+        return {"file": os.path.relpath(path, args.logdir), "motor": log.get("motor"),
+                "unit": log.get("unit", ""), "mass": log.get("mass"),
+                "length": log.get("length"), "kp": log.get("kp"),
+                "trajectory": log.get("trajectory"), "samples": len(entries),
+                "flags": f"recording aborted before any data, do not fit ({reason})",
+                "notes": ""}
     if "timestamp" in entries[0]:
         t = np.array([e["timestamp"] for e in entries])
     else:
@@ -172,6 +180,9 @@ def check_log(path: str, args, model=None) -> dict:
     flags, notes = [], []
     if "aborted" in log:
         flags.append(f"recording aborted, partial log, do not fit ({log['aborted']})")
+    if "shutdown_errors" in log:
+        notes.append("shutdown failed after recording (data complete): "
+                     + ", ".join(log["shutdown_errors"]))
 
     dt = np.diff(t)
     row["dt_mean_ms"] = round(1e3 * float(np.mean(dt)), 2)
@@ -433,7 +444,8 @@ def main():
     if not rows:
         raise SystemExit(f"no *.json under {args.logdir}")
 
-    readable = [r for r in rows if "motor" in r]
+    # Logs with no data are listed with their flag but take no part in the grid.
+    readable = [r for r in rows if "motor" in r and r.get("samples", 2) >= 2]
     swing_lines = swing_report(readable, args.armature, args.period_tolerance,
                                args.min_swing_cycles, args.viscous)
 
