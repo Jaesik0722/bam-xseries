@@ -20,11 +20,22 @@ Per log it checks:
   * supply:      --vin against the median measured input voltage, and the sag under load
   * temperature: maximum temperature against the 70 degC limit
   * motion:      the arm moved (all trajectories except `nothing`), or stayed still (`nothing`)
-  * free swing:  the period after the `lift_and_drop` release against the pendulum geometry,
-                 with each cycle corrected for its amplitude
+  * zero:        where the arm rests with torque off (`nothing`), against the +-0.1 rad that
+                 the fitted q_offset can absorb
+  * free swing:  the period after the `lift_and_drop` release, corrected for amplitude, and
+                 the armature it implies once the geometry is subtracted
+  * PWM gain:    the duty the firmware applied against error_gain * kp * position error, for
+                 logs that carry the `pwm` channel
   * registers:   the register snapshot, when the log has one, against what the model assumes
   * sampling:    mean and worst sample interval
-and across logs it lists missing and duplicated (configuration, kp, trajectory) cells.
+and across logs it lists missing and duplicated (configuration, kp, trajectory) cells, and
+compares the free-swing armature between load configurations.
+
+The free swing is not a check on mass and length alone: with torque off the rotor and gears
+still turn with the arm, so the reflected inertia (armature) is part of the period. Before a
+fit the reference armature is the median over the unit's configurations, so the check finds
+configurations that disagree with the others. After a fit, pass the fitted value with
+--armature to apply the M1 criterion (period within 3 % of the one computed with it).
 """
 
 import argparse
@@ -36,16 +47,37 @@ from collections import Counter
 
 import numpy as np
 
-G = 9.81
+from .dynamixel.xseries_actuator import X_ERROR_GAIN
+
+X_SERIES = ("xh540", "xm540", "xm430")
+G = 9.80665  # same as bam.testbench
 TRAJECTORIES = ["sin_time_square", "sin_sin", "lift_and_drop", "up_and_down",
                 "half_sine", "steps", "nothing"]
 
 
-def pendulum_period(mass: float, arm_mass: float, length: float) -> float:
-    """Small-swing period of BAM's pendulum: point mass plus uniform rod (PROTOCOL.md 6.4)."""
+def pendulum_terms(mass: float, arm_mass: float, length: float) -> tuple[float, float]:
+    """Inertia about the pivot and gravity stiffness of BAM's pendulum (bam.testbench)."""
     inertia = mass * length**2 + arm_mass * length**2 / 3
-    gravity = (mass * length + arm_mass * length / 2) * G
-    return 2 * np.pi * np.sqrt(inertia / gravity)
+    stiffness = (mass * length + arm_mass * length / 2) * G
+    return inertia, stiffness
+
+
+def pendulum_period(mass: float, arm_mass: float, length: float,
+                    armature: float = 0.0, viscous: float = 0.0) -> float:
+    """Small-swing period with the reflected actuator inertia included (PROTOCOL.md 6.4).
+
+    With `viscous` [N m s/rad] it is the damped period, longer by 1/sqrt(1 - zeta^2).
+    """
+    inertia, stiffness = pendulum_terms(mass, arm_mass, length)
+    inertia += armature
+    omega2 = stiffness / inertia - (viscous / (2 * inertia))**2
+    return 2 * np.pi / np.sqrt(omega2) if omega2 > 0 else np.inf
+
+
+def implied_armature(period: float, mass: float, arm_mass: float, length: float) -> float:
+    """The armature that makes the pendulum swing with this small-swing period."""
+    inertia, stiffness = pendulum_terms(mass, arm_mass, length)
+    return period**2 * stiffness / (4 * np.pi**2) - inertia
 
 
 def amplitude_factor(amplitude):
@@ -160,24 +192,49 @@ def check_log(path: str, args) -> dict:
     elif motion < args.min_motion:
         flags.append(f"barely moved ({motion:.3f} rad)")
 
+    if row["trajectory"] == "nothing":
+        rest = float(np.median(q))
+        row["rest_rad"] = round(rest, 4)
+        if abs(rest) > args.zero_tolerance:
+            flags.append(f"arm rests at {rest:+.3f} rad with torque off, and the fitted "
+                         "q_offset only spans +-0.1 rad (re-seat the horn, PROTOCOL.md 5.4)")
+
     if row["trajectory"] == "lift_and_drop" and None not in (row["mass"], arm_mass,
                                                               row["length"]):
-        t0 = pendulum_period(row["mass"], arm_mass, row["length"])
-        row["period_model_s"] = round(t0, 4)
         swing = free_swing(t, q, torque, max_amplitude=np.radians(args.max_swing_deg))
         if swing is None:
-            row["period_error"] = ""
             flags.append("free swing: no usable cycle (damped out or did not drop)")
         else:
             periods, amplitudes = swing
-            expected = t0 * amplitude_factor(amplitudes)
-            error = float(np.median(periods / expected - 1))
+            # Each cycle reduced to its small-swing equivalent. Armature only adds inertia,
+            # so the same amplitude correction holds with it.
+            small = float(np.median(periods / amplitude_factor(amplitudes)))
             row["period_measured_s"] = round(float(np.median(periods)), 4)
+            row["period_small_s"] = round(small, 4)
             row["period_cycles"] = len(periods)
-            row["period_error"] = round(error, 4)
-            if abs(error) > args.period_tolerance:
-                flags.append(f"free-swing period off by {100 * error:+.1f} % "
-                             "(check --mass, --arm-mass, --length)")
+            row["period_no_armature_s"] = round(
+                pendulum_period(row["mass"], arm_mass, row["length"]), 4)
+            row["armature_implied"] = round(
+                implied_armature(small, row["mass"], arm_mass, row["length"]), 5)
+            if row["armature_implied"] < 0:
+                flags.append("free swing faster than the geometry allows even with zero "
+                             "armature (check --mass, --arm-mass, --length)")
+
+    pwm = np.array([e.get("pwm", np.nan) for e in entries], dtype=float)
+    goal = np.array([e.get("goal_position", np.nan) for e in entries], dtype=float)
+    if np.isfinite(pwm).any() and row["kp"] and row["motor"] in X_SERIES:
+        predicted = X_ERROR_GAIN * row["kp"] * (goal - q)
+        # Unsaturated samples with torque on and an error well above encoder resolution.
+        use = (torque & np.isfinite(pwm) & np.isfinite(predicted)
+               & (np.abs(predicted) > 0.03) & (np.abs(predicted) < 0.9)
+               & (np.abs(pwm) < 0.95))
+        row["pwm_samples"] = int(use.sum())
+        if use.sum() >= args.min_pwm_samples:
+            ratio = float(np.sum(pwm[use] * predicted[use]) / np.sum(predicted[use]**2))
+            row["pwm_gain_ratio"] = round(ratio, 3)
+            if not 1 / args.pwm_ratio_tolerance <= ratio <= args.pwm_ratio_tolerance:
+                flags.append(f"applied PWM is {ratio:.2f} x error_gain * kp * error "
+                             "(PROTOCOL.md 9)")
 
     if "registers" in log:
         problems = log.get("register_problems")
@@ -188,7 +245,7 @@ def check_log(path: str, args) -> dict:
             except ImportError:  # dynamixel_sdk is not needed just to read logs
                 problems = ["snapshot present but not checked (dynamixel_sdk missing)"]
         flags.extend(f"register {p}" for p in problems)
-    elif row["motor"] in ("xh540", "xm540", "xm430"):
+    elif row["motor"] in X_SERIES:
         row["unit"] = row["unit"] or "?"
         flags.append("no register snapshot (recorded before it was added)")
 
@@ -226,6 +283,51 @@ def grid_report(rows):
     return lines
 
 
+def swing_report(rows, armature, tolerance, min_cycles=2, viscous=0.0):
+    """Compare the free-swing periods of each unit against one armature value.
+
+    The reference is --armature when given (after a fit) and otherwise the median of the
+    implied armatures over the unit's load configurations. Flags are added to the rows.
+    """
+    lines = []
+    groups = {}
+    for r in rows:
+        if "armature_implied" not in r:
+            continue
+        if r["period_cycles"] < min_cycles:
+            # Near the end of the swing static friction distorts the last cycle, and one
+            # cycle alone cannot show that.
+            flag = f"free swing: only {r['period_cycles']} usable cycle, not judged"
+            r["flags"] = "; ".join(filter(None, [r.get("flags"), flag]))
+            continue
+        groups.setdefault((r["motor"], r["unit"]), []).append(r)
+    for (motor, unit), group in groups.items():
+        implied = np.array([r["armature_implied"] for r in group])
+        configs = {(r["mass"], r["length"]) for r in group}
+        reference = armature if armature is not None else float(np.median(implied))
+        source = "--armature" if armature is not None else "median over configurations"
+        lines.append(f"{motor} {unit or ''}: free-swing armature over {len(group)} logs, "
+                     f"{len(configs)} configurations: median {np.median(implied):.4f}, "
+                     f"range {implied.min():.4f} to {implied.max():.4f} kg m^2")
+        errors = []
+        for r in group:
+            expected = pendulum_period(r["mass"], r["arm_mass"], r["length"], reference,
+                                       viscous)
+            error = r["period_small_s"] / expected - 1
+            r["period_reference_s"] = round(expected, 4)
+            r["period_error"] = round(error, 4)
+            errors.append(error)
+            if abs(error) > tolerance:
+                flag = (f"free-swing period {100 * error:+.1f} % from the one computed with "
+                        f"armature {reference:.4f} ({source})")
+                r["flags"] = "; ".join(filter(None, [r.get("flags"), flag]))
+        errors = np.array(errors)
+        worst = errors[np.argmax(np.abs(errors))]
+        lines.append(f"  period against armature {reference:.4f} ({source}): "
+                     f"median {100 * np.median(errors):+.1f} %, worst {100 * worst:+.1f} %")
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -238,7 +340,19 @@ def main():
     parser.add_argument("--still-tolerance", type=float, default=0.02, help="rad")
     parser.add_argument("--period-tolerance", type=float, default=0.03,
                         help="relative; 3 %% is the criterion in the SIMPAT plan (M1)")
-    parser.add_argument("--max-swing-deg", type=float, default=60.0,
+    parser.add_argument("--armature", type=float, default=None,
+                        help="fitted armature [kg m^2] to compute the free-swing period "
+                             "with; default: the median the logs imply")
+    parser.add_argument("--viscous", type=float, default=0.0,
+                        help="fitted friction_viscous [N m s/rad], used with --armature")
+    parser.add_argument("--min-swing-cycles", type=int, default=2)
+    parser.add_argument("--zero-tolerance", type=float, default=0.05,
+                        help="rad; the fitted q_offset is bounded to +-0.1")
+    parser.add_argument("--pwm-ratio-tolerance", type=float, default=1.25,
+                        help="flag a PWM gain ratio outside [1/x, x]; a divisor of 256 "
+                             "instead of 128 would show as 0.5")
+    parser.add_argument("--min-pwm-samples", type=int, default=100)
+    parser.add_argument("--max-swing-deg", type=float, default=80.0,
                         help="only cycles below this amplitude are timed (each is "
                              "corrected for amplitude exactly)")
     parser.add_argument("--max-dt-ms", type=float, default=20.0)
@@ -255,6 +369,10 @@ def main():
     if not rows:
         raise SystemExit(f"no *.json under {args.logdir}")
 
+    readable = [r for r in rows if "motor" in r]
+    swing_lines = swing_report(readable, args.armature, args.period_tolerance,
+                               args.min_swing_cycles, args.viscous)
+
     flagged = [r for r in rows if r.get("flags")]
     print(f"{len(rows)} logs, {len(flagged)} flagged\n")
     for r in flagged:
@@ -262,13 +380,22 @@ def main():
         for flag in r["flags"].split("; "):
             print(f"    ! {flag}")
 
-    swings = [r for r in rows if isinstance(r.get("period_error"), float)]
-    if swings:
-        errors = np.array([r["period_error"] for r in swings])
-        print(f"\nfree-swing period error over {len(swings)} lift_and_drop logs: "
-              f"median {100 * np.median(errors):+.1f} %, worst {100 * errors[np.argmax(np.abs(errors))]:+.1f} %")
+    if swing_lines:
+        print()
+        for line in swing_lines:
+            print(line)
 
-    readable = [r for r in rows if "motor" in r]
+    ratios = {}
+    for r in readable:
+        if "pwm_gain_ratio" in r:
+            ratios.setdefault((r["motor"], r["unit"], r["kp"]), []).append(r["pwm_gain_ratio"])
+    if ratios:
+        print("\napplied PWM / (error_gain * kp * error), median per P gain "
+              "(1.0 = model's error_gain, 0.5 = divisor 256):")
+        for (motor, unit, kp), values in sorted(ratios.items(), key=str):
+            print(f"  {motor} {unit or ''} kp {kp}: {np.median(values):.3f} "
+                  f"({len(values)} logs)")
+
     print()
     for line in grid_report(readable):
         print(line)

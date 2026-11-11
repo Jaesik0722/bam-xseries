@@ -100,7 +100,11 @@ class Logs:
                 )
             )
 
-        entry_keys = self.logs[0]["entries"][0].keys()
+        # Keys common to every log, so that logs recorded before a channel was added (the X
+        # series `pwm`, for instance) can share a directory with newer ones.
+        entry_keys = set(self.logs[0]["entries"][0])
+        for log in self.logs[1:]:
+            entry_keys &= set(log["entries"][0])
         for k in range(entries_min_length):
             batch["entries"].append(
                 {

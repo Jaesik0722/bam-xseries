@@ -1,9 +1,10 @@
 # What to Measure Before Recording
 
 The pendulum model BAM fits assumes a **uniform rod** carrying a **point mass at its tip**.
-The arm in this design is not uniform — its mass sits mostly in the cage at the far end — so
-the numbers passed to the recorder have to be equivalent values, not raw ones. Everything
-below is measured once per arm, not per configuration.
+The arm in this design is not uniform — its mass sits mostly in the cage at the far end — and
+the weight can be split over slots at different radii, so the numbers passed to the recorder
+have to be equivalent values, not raw ones. Sections A–C are measured once per arm; D is
+computed per configuration.
 
 ---
 
@@ -47,6 +48,7 @@ numbers are needed: `r_upper` and `r_lower`.
 | Symbol | What to do | Unit |
 |---|---|---|
 | `m_block` | Weigh one block **with its fastener**, on a 1 g scale | kg |
+| `I_block` | Its moment of inertia about its **own** centre, from CAD (optional; small for compact blocks) | kg·m² |
 
 Weigh them individually if they are not identical, and keep them labelled.
 
@@ -54,48 +56,50 @@ Weigh them individually if they are not identical, and keep them labelled.
 
 ## D. What to compute, per configuration
 
-A configuration is a choice of which slots are filled.
-
-**Total load**
-
-```
-m_load = sum of the blocks fitted
-```
-
-**Load radius** — the mass-weighted mean of the filled slot centres. With identical blocks
-this is the plain average:
+A configuration is a choice of which slots are filled. BAM's pendulum has two physical
+properties, the gravity torque and the inertia about the axis, and three numbers to set them
+(`--mass`, `--arm-mass`, `--length`). Choose them so that **both** match the real arm:
 
 ```
-L = (r_i + r_j + ...) / (number of blocks fitted)
+moment  = sum(m_i * r_i) + m_arm * d_arm                  # kg·m, sets the gravity torque
+inertia = sum(m_i * r_i^2 + I_block_i) + I_arm            # kg·m², about the axis
+L       = sum(m_i * r_i) / sum(m_i)                       # mass-weighted block radius
+a       = moment / L
+b       = inertia / L^2
+mass     = 3*b - 2*a
+arm_mass = 6*(a - b)
 ```
 
-**Equivalent arm mass** — makes BAM's gravity torque match the real one:
-
-```
-m_arm_eq = 2 * m_arm * d_arm / L
-```
-
-These three are what go to the recorder:
+The tool does this and prints the recorder arguments:
 
 ```bash
---mass <m_load>  --arm-mass <m_arm_eq>  --length <L>
+python -m bam.equivalent_pendulum --arm-mass <m_arm> --arm-com <d_arm> \
+  --arm-inertia <I_arm> --block <m_1>:<r_1> --block <m_2>:<r_2>
 ```
+
+`arm_mass` may come out negative. That is expected, because it is an equivalent value, not a
+physical one, and `bam.fit` and `bam.check_logs` accept it.
+
+**Why not the mean radius.** Blocks at different radii carry `sum(m_i·r_i²)`, which is
+larger than `m_load·L²` at their mean radius. An earlier version of this sheet matched only
+the gravity torque, so the model's inertia came out low. The fit then puts the shortfall
+into `armature`, and since the shortfall differs between configurations, the result is a
+compromise rather than a constant offset. The tool prints the shortfall of those torque-only
+values too.
+
+**Logs recorded with the earlier values** can still be used. The gravity torque was right,
+so only `mass` and `arm-mass` need replacing. Write corrected copies into a new directory,
+keep the originals untouched, note the change, and then run `bam.process` on the copies.
 
 ---
 
 ## E. One check to report
 
-The equivalent arm mass fixes the gravity torque exactly, but the inertia will not match
-perfectly. Compute both and compare:
-
-```
-I_bam  = m_load * L^2 + (m_arm_eq / 3) * L^2
-I_true = m_load * L^2 + I_arm
-```
-
-Report `I_true / I_bam` for the lightest and the heaviest configuration. Below about 1.10 the
-residual is small enough to ignore. Above that, the arm is too heavy relative to the load and
-either the cage should be lightened or heavier blocks used.
+For the lightest and the heaviest configuration, report the real inertia
+(`inertia` above) next to the starting `armature` of the motor (0.027 kg·m² for XH540 and
+XM540, 0.012 kg·m² for XM430). Where the load inertia is much smaller than `armature`, the
+swing and the steps are dominated by the motor, which is fine for identifying `armature`
+but leaves the arm values poorly checked by the free swing (PROTOCOL.md §6.4).
 
 ---
 
@@ -108,6 +112,7 @@ I_arm   = ___ kg·m²       about the rotation axis
 r_upper = ___ m           axis to upper slot centres
 r_lower = ___ m           axis to lower slot centres
 m_block = ___ kg          one block, weighed
+I_block = ___ kg·m²       one block about its own centre (optional)
 ```
 
-Six numbers. Everything else is computed from them.
+Everything else is computed from them with `bam.equivalent_pendulum`.

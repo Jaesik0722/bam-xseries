@@ -9,8 +9,10 @@ torque constant `kt`, the winding resistance `R`, the reflected rotor inertia `a
 the friction terms. These go into the simulator so that simulated joints behave like the real
 ones.
 
-**Time:** about half a day of recording once the bench exists, plus a few minutes of fitting
-per actuator. Building the bench is the long pole.
+**Time:** per unit, about 45 minutes of recorder time (252 logs of about 10 s each including
+initialisation and the return to zero), plus weight changes and cooling: 2 to 3.5 hours in
+all. Fitting runs unattended; time the first fit before planning the rest. Building the
+bench is the long pole.
 
 ---
 
@@ -21,7 +23,7 @@ per actuator. Building the bench is the long pole.
 | Item | Specification | Notes |
 |---|---|---|
 | Actuators | XH540-W270, XM540-W270, XM430-W350 | one of each; they are identified separately |
-| Power supply | **14.8 V**, 6 A or more | matches 4S nominal, which is what the robot runs; XH540 draws about 6 A at stall at this voltage |
+| Power supply | **14.8 V**, 6 A or more | the top of the 10.0–14.8 V input range of all three models; XH540 is rated 5.9 A at stall at this voltage |
 | Interface | U2D2 + U2D2 Power Hub Board | USB to TTL/RS-485 |
 | Aluminium profile | 20×20 or 30×30 mm, ~30 cm | the mast the actuator hangs from |
 | Bench vice or C-clamps | — | clamps the profile to the table |
@@ -38,13 +40,18 @@ model with configurable arm length:
 
 ### Software
 
+Python 3.12 is required (`requires-python` in `pyproject.toml`).
+
 ```bash
 git clone <this repository>
 cd bam-xseries
-pip install -e .
-pip install dynamixel_sdk
-sudo apt install setserial          # required; the driver sets low-latency mode
+git checkout xseries
+pip install -e ".[identification]"   # dynamixel_sdk, optuna, cmaes, matplotlib, ...
+sudo apt install setserial            # required; the driver sets low-latency mode
 ```
+
+`pip install -e .` alone installs only numpy and colorama; recording would work but
+`bam.fit` would not.
 
 Give yourself permission to the USB port, then log out and back in:
 
@@ -63,7 +70,8 @@ indistinguishable, in the data, from compliance in the actuator, and it will cor
 `armature` and friction estimates.
 
 1. Clamp the aluminium profile to the table so that **one end overhangs the edge**. The arm
-   must be able to swing to ±90° from vertical without hitting anything.
+   must be able to swing to **±105° from vertical** without hitting anything: `sin_sin`
+   commands up to ±100.8°, and the arm overshoots its target under load.
 2. Bolt the actuator bracket to the overhanging end, using **at least two bolts**.
 3. Bolt the actuator to the bracket through all available mounting holes.
 
@@ -101,9 +109,9 @@ higher no-load speed sweeps a wider part of the torque-speed plane, which separa
 `R` more cleanly.
 
 Use a bench supply, not a battery. What matters is not the voltage level but that it is
-**known and constant**: a pack drifting from 16.8 V down to 14 V through a session puts that
-drift into the fitted `kt` and `R`. If the supply sags under load the data is compromised
-(see §6.3).
+**known and constant**: a pack discharging through a session puts that drift into the fitted
+`kt` and `R`. (A fully charged 4S pack is 16.8 V, which is above the 14.8 V input range of
+all three models.) If the supply sags under load the data is compromised (see §6.3).
 
 ---
 
@@ -118,9 +126,12 @@ assumed.
 | `--mass` | mass of the weight, in kg | weigh the weight and its bolt together |
 | `--length` | distance from the **rotation axis** to the **centre of mass of the weight**, in metres | measure from the output shaft centre to the middle of the weight |
 
-If the arm is not a uniform rod -- a light shaft with a heavy fixture at the end, for
-instance -- the values above are not the raw ones. See [MEASUREMENTS.md](MEASUREMENTS.md) for
-what to read off the CAD model and how to convert it.
+BAM's pendulum is a point mass on a uniform rod. If the arm is not a uniform rod -- a light
+shaft with a heavy fixture at the end, for instance -- or the weight is split over blocks at
+different radii, the values above are not the raw ones. See [MEASUREMENTS.md](MEASUREMENTS.md)
+for what to read off the CAD model, and use `python -m bam.equivalent_pendulum` to convert it.
+Values that match only the gravity torque leave an inertia error, and the fit puts it into
+`armature`.
 
 `--length` is *not* the length of the arm. If the weight is a 40 mm tall cylinder whose near
 face sits 130 mm from the axis, then `--length` is 0.150 m, not 0.130 m.
@@ -142,13 +153,13 @@ The upper end matters. Measured on this robot's own policies, the knee runs at a
 operating range of the real joint sits inside the identified set.
 
 Stall torque rises with supply voltage, so the same weights correspond to lower percentages
-here than they would at 12 V:
+here than they would at 12 V. ROBOTIS e-Manual figures:
 
 | | stall at 12 V | stall at 14.8 V |
 |---|---|---|
-| XH540-W270 | 9.9 N·m | **12.21 N·m** |
-| XM540-W270 | 10.6 N·m | **13.07 N·m** |
-| XM430-W350 | 4.1 N·m | **5.06 N·m** |
+| XH540-W270 | 9.9 N·m | **11.7 N·m** |
+| XM540-W270 | 10.6 N·m | **12.9 N·m** |
+| XM430-W350 | 4.1 N·m | **4.8 N·m** |
 
 ### 4.1 XH540-W270 and XM540-W270
 
@@ -156,9 +167,9 @@ Use the same set for both.
 
 | Weight | 0.10 m | 0.15 m | 0.20 m |
 |---|---|---|---|
-| 0.5 kg | 0.53 N·m (4 %) | 0.79 (7 %) | 1.06 (9 %) |
-| 1.5 kg | 1.51 (12 %) | 2.27 (19 %) | 3.02 (25 %) |
-| 3.0 kg | 2.98 (24 %) | 4.47 (37 %) | 5.96 (49 %) |
+| 0.5 kg | 0.53 N·m (5 %) | 0.79 (7 %) | 1.06 (9 %) |
+| 1.5 kg | 1.51 (13 %) | 2.27 (19 %) | 3.02 (26 %) |
+| 3.0 kg | 2.98 (25 %) | 4.47 (38 %) | 5.96 (51 %) |
 
 Percentages are against the XH540 stall torque; for the XM540 they are one or two points
 lower, which does not change the set.
@@ -167,9 +178,9 @@ lower, which does not change the set.
 
 | Weight | 0.10 m | 0.15 m | 0.20 m |
 |---|---|---|---|
-| 0.2 kg | 0.24 N·m (5 %) | 0.35 (7 %) | 0.47 (9 %) |
-| 0.5 kg | 0.53 (10 %) | 0.79 (16 %) | 1.06 (21 %) |
-| 1.2 kg | 1.22 (24 %) | 1.82 (36 %) | 2.43 (48 %) |
+| 0.2 kg | 0.24 N·m (5 %) | 0.35 (7 %) | 0.47 (10 %) |
+| 0.5 kg | 0.53 (11 %) | 0.79 (16 %) | 1.06 (22 %) |
+| 1.2 kg | 1.22 (25 %) | 1.82 (38 %) | 2.43 (51 %) |
 
 Percentages are the gravity torque with the arm horizontal, assuming an 80 g arm.
 
@@ -189,7 +200,8 @@ convert the identified model into the stiffness your simulator should use.
 ### 4.4 If the arm bends
 
 Same torque, less bending: halve the length and double the weight. 6 kg at 0.10 m gives the
-same 5.9 N·m as 3 kg at 0.20 m. Note that this also quarters the load inertia, which makes
+same 5.9 N·m as 3 kg at 0.20 m. Note that this also halves the load inertia (2m·(L/2)² =
+m·L²/2), which makes
 `armature` *easier* to identify, so it is worth having both short-heavy and long-light
 configurations in the set rather than only one kind.
 
@@ -210,12 +222,11 @@ part of the operating space the others do not. All seven ship with the tool and 
 | `up_and_down` | slow cubic 0 → π/2 → 0.8·π/2 | static friction and load-dependent effects, and the back-driving regime |
 | `half_sine` | slow half-sine 0 → π/2 | the quasi-static end of the range |
 | `steps` | step changes in target | the initial acceleration after a step is τ/J, so this bears directly on `armature` |
-| `nothing` | torque disabled throughout | pure gravity response, which is the only way to check the pendulum model itself (see §6.4) |
+| `nothing` | torque disabled throughout | where the arm rests with no torque, which checks the zero (§5.4), and whether anything is loose |
 
 The original study used the first four. `steps` and `nothing` are included here because
 `armature` is the parameter this exercise exists to obtain and `steps` speaks to it directly,
-and because `nothing` is the one trajectory that can tell you your mass and length entries
-are wrong.
+and because `nothing` shows the zero offset the fit will have to absorb.
 
 A plain fixed-frequency sine is **not** worth adding: `sin_time_square` is a swept sine and
 already contains it. What improves an identification is reaching a regime the other
@@ -292,13 +303,28 @@ Two rules about ordering:
 
 ### 5.4 Zero position
 
-Zero radians is the arm hanging **straight down**. Disable torque, let the arm settle under
-gravity, and take that as zero. The fit has a `q_offset` parameter that absorbs a small
-error, but starting close is better.
+The model's zero is the arm hanging **straight down**, but nothing is set in software: the
+driver reads encoder count 2048 as 0 rad, always. The zero is therefore fixed by how the horn
+and arm are bolted on, and the fit's `q_offset` can absorb only ±0.1 rad (±5.7°).
+
+1. With torque disabled, let the arm hang and settle.
+2. Read the position:
+
+   ```bash
+   python -c "from bam.dynamixel.xseries import DynamixelXSeries as D; print(D('/dev/ttyUSB0').read_data()['position'])"
+   ```
+
+3. If it is more than about 0.03 rad (2°) from zero, re-seat the arm on the horn at the
+   spline position closest to zero and read again. Do not change `Homing Offset` (register
+   20): the register check would not catch the change in what 0 rad means.
+4. Write the reading in your notes, and repeat it each time the weight is changed.
+
+`bam.check_logs` flags a `nothing` log whose arm rests more than 0.05 rad from zero.
 
 ### 5.5 What gets logged
 
-Every sample records position, velocity, current, input voltage and **temperature**. Keep
+Every sample records position, velocity, current, the applied PWM duty (`pwm`, used in §9),
+input voltage and **temperature**. Keep
 the temperature: the winding resistance rises about 0.39 %/°C and the magnets weaken about
 0.11 %/°C, so stall torque falls roughly 20 % between 25 °C and 70 °C. You want to be able
 to check whether that affected your session.
@@ -317,10 +343,11 @@ python -m bam.check_logs --logdir logs_raw/xh540_A --csv checks_xh540_A.csv
 ```
 
 It flags, per log: `--vin` against the measured voltage, supply sag (§6.3), temperature
-over 70 °C (§6.5), an arm that did not move or a `nothing` log that did, the free-swing
-period against the geometry (§6.4), registers that differ from what the model assumes, and
-gaps in the sampling. It then lists every (load, kp, trajectory) cell that is missing or
-recorded twice. **Do not delete flagged logs**; move them to a separate directory and keep
+over 70 °C (§6.5), an arm that did not move or a `nothing` log that did, a `nothing` log
+resting away from zero (§5.4), a free-swing period that disagrees with the unit's other
+configurations (§6.4), an applied PWM that does not follow `error_gain` (§9), registers that
+differ from what the model assumes, and gaps in the sampling. It then lists every (load, kp,
+trajectory) cell that is missing or recorded twice. **Do not delete flagged logs**; move them to a separate directory and keep
 the CSV, so that what was excluded and why is on record.
 
 ### 6.1 Did the arm move?
@@ -339,26 +366,42 @@ Plot `input_volts` on the heaviest configuration. If it sags more than a few ten
 your supply is too small and every log taken at that load is biased. Fix the supply and redo
 them.
 
-### 6.4 Does the free swing match the geometry you entered?
+### 6.4 Is the free swing consistent across configurations?
 
-`lift_and_drop` raises the arm to −π/2 and then disables torque, so the rest of that log is a
-plain pendulum. Its period depends only on the mass, the length and gravity — no actuator
-parameter enters — which makes it an independent check on the two numbers you measured by
-hand.
-
-For small swings,
+`lift_and_drop` raises the arm to −π/2 and then disables torque. With torque off there is no
+motor torque, but the rotor and gears still turn with the arm, so the swing is a pendulum
+whose inertia includes the reflected rotor inertia `armature`:
 
 ```
-T0 = 2π · sqrt( (m·L² + m_arm·L²/3) / ((m·L + m_arm·L/2)·g) )
+T0 = 2π · sqrt( (m·L² + m_arm·L²/3 + armature) / ((m·L + m_arm·L/2)·g) )
 ```
 
-The release is from 90°, where the true period is about **1.18·T0**; by the time the swing
-has decayed to roughly 30° it is within 2 % of `T0`. So measure the period of the *later*
-swings in the log and compare against `T0`. `bam.check_logs` times every cycle below 60° and
-corrects each one for its amplitude exactly, so it does not need the swing to decay to 30°.
+For the light configurations `armature` is as large as the load inertia (XH540: about
+0.027 kg·m² against 0.034 kg·m² for 1.5 kg at 0.15 m), so leaving it out is not a small
+error.
 
-A disagreement beyond **3 %** means `--mass` or `--length` is wrong, and every other log from
-that configuration is wrong with it.
+The release is from 90°, where the period is about 1.18·T0. `bam.check_logs` times every
+cycle below 80° and corrects each for its amplitude exactly (armature adds inertia only, so
+the same correction holds), then solves the formula above for the `armature` each log
+implies. Coulomb friction shortens the swing but not its period. Viscous friction lengthens
+it by 1/√(1−ζ²): under 1 % for `friction_viscous` around 0.05 N·m·s/rad, but several percent
+if it is a few tenths, so after the fit pass it too. Logs with fewer than two usable cycles
+are reported but not judged.
+
+What this checks:
+
+- **Before fitting**, the reference is the median implied `armature` over the unit's
+  configurations. A configuration whose period is more than **3 %** away from the one
+  computed with it disagrees with the others: check its mass, length and arm values, and
+  whether the arm fouls something. A negative implied `armature` means the entered geometry
+  is too heavy or too long for the swing it produced.
+- **After fitting**, pass the fitted values, `--armature <armature> --viscous
+  <friction_viscous>`, to apply the 3 % criterion against the identified model.
+
+This is not an independent check on mass and length. An error in either is partly absorbed
+by the implied `armature`: a 0.15 m entry for a weight really at 0.17 m (0.5 kg) moves the
+period only about 1.5 %. Measure the geometry carefully; the swing catches only gross errors
+and configurations that disagree with each other.
 
 `nothing` is a weaker version of the same check: it disables torque with the target at zero,
 so unless the arm happens to be displaced when it starts, it simply sits still. Its value is
@@ -424,15 +467,17 @@ for kp in 100 200 400 800; do
 done
 ```
 
-Fitting takes a few minutes per run.
+Time the first fit before planning the rest; with about 190 logs per fit and 4000 trials,
+expect tens of minutes per run. The runs are independent and can be started in parallel.
 
 ### 7.4 What to hand in
 
 For each unit: the raw logs (`logs_raw/<unit>/`, including the excluded ones in their own
 directory), the register dump (`registers/<unit>.json`), the `bam.check_logs` CSV, the
 geometry sheet (MEASUREMENTS.md values, and mass, arm mass and length per configuration),
-the supply voltage you read, the fitted JSON files of §7.2 and §7.3 with their printed
-output, and the commit hash of this repository you fitted with (`git rev-parse HEAD`).
+the supply voltage you read, the hanging position read per configuration (§5.4), the fitted
+JSON files of §7.2 and §7.3 with their printed output, the `bam.catalog_check` output for
+the m4 fit, and the commit hash of this repository you fitted with (`git rev-parse HEAD`).
 
 ---
 
@@ -449,23 +494,36 @@ output, and the commit hash of this repository you fitted with (`git rev-parse H
 
 ### 8.1 Sanity check against the catalogue
 
-```
-stall torque   = kt * V / R
-no-load speed  = V / kt
+The catalogue quotes output-shaft figures, so compare what the **whole model, friction
+included**, predicts, not the motor terms alone:
+
+```bash
+python -m bam.catalog_check --params params/xh540_A_m4.json --vin 14.8
 ```
 
-Evaluate these at the voltage you actually used. The catalogue figures are quoted at 12 V, so
-at 14.8 V the same motor should come out higher:
+It prints:
 
-| | stall, 12 V | stall, **14.8 V** | no-load, 12 V | no-load, **14.8 V** |
+- **stall torque**: the largest load the motor can start to lift from rest at full duty,
+  that is `kt·V/R` minus the static friction budget at that load;
+- **no-load speed**: the speed at full duty and no load at which the motor torque equals the
+  friction;
+- the frictionless `kt·V/R` and `V/kt` alongside, for reference only. With a load-dependent
+  friction model these are well above the catalogue even for a correct fit.
+
+The catalogue values (ROBOTIS e-Manual) at the listed voltages are below. The script
+interpolates between them and refuses voltages outside 11.1–14.8 V.
+
+| | stall 12 V | stall **14.8 V** | no-load 12 V | no-load **14.8 V** |
 |---|---|---|---|---|
-| XH540-W270 | 9.9 N·m | **12.21** | 4.08 rad/s | **5.04** |
-| XM540-W270 | 10.6 | **13.07** | 3.14 | **3.88** |
-| XM430-W350 | 4.1 | **5.06** | 4.82 | **5.94** |
+| XH540-W270 | 9.9 N·m | **11.7 N·m** | 39 rpm (4.08 rad/s) | **46 rpm (4.82 rad/s)** |
+| XM540-W270 | 10.6 | **12.9** | 30 (3.14) | **37 (3.87)** |
+| XM430-W350 | 4.1 | **4.8** | 46 (4.82) | **57 (5.97)** |
 
-The starting values shipped in this repository reproduce the 12 V catalogue exactly, so a
-fitted result far from the right column is telling you something is wrong — most likely the
-mount moved, a mass or length was mis-entered, or `error_gain` is wrong (§9).
+The e-Manual defines stall torque as the maximum momentary torque and notes that its N–T
+curves, measured under a gradually increasing load, sit below it. The comparison is
+therefore coarse; the criterion is **±20 %**. A model far outside it is telling you something
+is wrong — most likely the mount moved, the geometry was mis-entered, the friction terms
+traded off against `kt` and `R`, or `error_gain` is wrong (§9).
 
 ### 8.2 Expected magnitudes
 
@@ -478,7 +536,7 @@ mount moved, a mass or length was mis-entered, or `error_gain` is wrong (§9).
 
 `kt` and `R` are properties of the magnets and windings. They do not depend on the supply
 voltage, so the ranges above apply whichever voltage you identified at, and a model fitted at
-14.8 V predicts behaviour at 12 V or 16.8 V by substituting `V` in the equations above.
+14.8 V predicts behaviour elsewhere in the 10.0–14.8 V input range by substituting `V`.
 
 A parameter that sits on the edge of its search range (the fit prints `min` and `max` for
 each) was not identified; report it rather than using it.
@@ -508,12 +566,29 @@ register dump of §5.2 shows a different `pwm_limit`, a non-zero profile, I or D
 Operating Mode other than 3, the model does not describe the controller that was recorded,
 and `kt` and `R` will absorb the difference.
 
-How to tell: fit each P gain separately (§7.3) and compare `kt` and `R` across them. If `error_gain`
-is correct, those values are the same whatever the gain, because they are properties of the
-motor. If they drift systematically with the P gain, `error_gain` is off by a constant
-factor — change `X_KP_DIVISOR` in `bam/dynamixel/xseries_actuator.py` to 256 and refit. If
-neither value works, the gain must be measured directly with an oscilloscope on the motor
-terminals.
+**Direct check.** Each sample logs the duty the firmware actually applied (`pwm`, from
+Present PWM, register 124) next to the goal and present position. With a pure P loop the
+firmware's duty should be `error_gain · kp · (q_target − q)` until it saturates.
+`bam.check_logs` fits that ratio on the unsaturated samples of every log and prints its median
+per P gain:
+
+- about **1.0** at every P gain: `error_gain` is right;
+- about **0.5** at every P gain: the firmware behaves as if the divisor were 256, as BAM found
+  for the XL330;
+- different values at different P gains, or far from both: a register (§5.2) or
+  something else in the firmware path is not what the model assumes. Changing the divisor
+  would not fix it.
+
+Only change `X_KP_DIVISOR` in `bam/dynamixel/xseries_actuator.py` on the second result, and
+record the change with the fit. Logs recorded before the `pwm` channel was added cannot be
+checked this way.
+
+**Indirect check.** Fit each P gain separately (§7.3) and compare `kt` and `R` across them.
+They are properties of the motor and should agree within 10 %. A systematic drift with the
+P gain has several possible causes besides `error_gain` — a non-default register, PWM
+saturation at high gains, friction terms trading off against `R` differently at each gain —
+so use the direct check above to tell them apart rather than changing the divisor to make
+the drift disappear.
 
 ---
 
@@ -522,18 +597,30 @@ terminals.
 The identified numbers describe the actuator, not the controller. Nothing changes on the
 robot: it still runs its own firmware position loop. What changes is the simulator.
 
+To reproduce the identified model, the simulator has to run the same computation as the fit,
+every physics step. Do not re-derive it: call or port the code that the fit itself used,
+`bam/simulate.py` (`Simulator.step`) with `Model.compute_frictions` in `bam/model.py`; for
+MuJoCo and mjlab, `bam/mujoco.py` and `bam/mjlab.py` already do this. In outline:
+
 ```python
 # at asset creation
-props["armature"] = armature     # identified
+armature = params["armature"]                      # added to the joint inertia
 
-# each physics step (the firmware position loop, as BAM models it)
-duty  = clamp(error_gain * kp * (q_target - q), -1, 1)
-tau_m = kt * (duty * V - kt * dq) / R          # motor torque at the output shaft
-# friction from the identified model (frictionloss, damping) is then applied on top
+# each physics step
+duty  = clip(error_gain * kp * (q_target - q), -1, 1)     # firmware P loop
+tau_m = kt * (duty * V_supply - kt * dq) / R              # applied voltage is duty * V_supply
+tau_g = bias torque at the joint (gravity, contacts)      # "external_torque" in BAM
+frictionloss, damping = model.compute_frictions(tau_m, tau_g, dq)
+# Stribeck and load-dependent terms make frictionloss depend on tau_m, tau_g and dq, so it
+# must be recomputed every step; a constant joint friction does not reproduce m4.
+# Static friction: clip the torque needed to stop the joint this step,
+#   tau_stop = (inertia / dt) * dq + tau_m + tau_g,
+# to +-(frictionloss + damping * |dq|), and apply it against the motion (simulate.py).
 ```
 
 `kt` already refers to the output shaft (it includes the gear ratio), so `tau_m` must not be
-multiplied by the gear ratio again.
+multiplied by the gear ratio again. The voltage that enters the torque is the PWM-applied
+voltage `duty · V_supply`, so the supply voltage the robot actually sees has to be known.
 
 Linearising the motor term away from duty saturation gives the effective PD gains for the
 P gain your robot runs and the supply voltage it sees:
@@ -544,8 +631,10 @@ effective damping   = kt² / R                    (this is the back-EMF term; th
                                                   friction_viscous adds to it)
 ```
 
-The stiffness depends on the supply voltage: a battery running down from 16.8 V to 14 V
-lowers it by about 17 %.
+These are for comparing with a plain PD model (they are what a calibrated-PD baseline uses).
+They leave out the duty saturation and the friction model, so a simulation built from them
+alone is not the identified model. The stiffness is proportional to the supply voltage:
+14.8 V against 12.0 V is a 23 % difference.
 
 So the bench does not hand you a stiffness directly — it hands you the function that turns
 your robot's firmware P gain into the stiffness your simulator should use.
@@ -559,21 +648,24 @@ your robot's firmware P gain into the stiffness your simulator should use.
 [ ] Actuator body immovable when the arm is twisted by hand
 [ ] Metal horn fitted
 [ ] Arm does not visibly bend at its heaviest intended load
-[ ] Arm clears everything through ±90° from vertical
+[ ] Python 3.12, installed with pip install -e ".[identification]"
+[ ] Arm clears everything through ±105° from vertical
 [ ] Arm mass, weight mass and axis-to-weight-centre distance all weighed and measured
+[ ] Non-uniform arm or split weights converted with bam.equivalent_pendulum (MEASUREMENTS.md)
 [ ] Robot's own Position P Gain read off and included in the gain list
 [ ] Servo labelled; --unit and log directory use the label
 [ ] Registers dumped before the first log; nothing reported, or the fix noted
 [ ] --vin set to the supply voltage actually read
-[ ] Zero set with torque disabled and the arm hanging free
+[ ] Hanging position read with torque off, within 0.03 rad of zero, noted per configuration
 [ ] Configuration order randomised
 [ ] Temperature logged, nothing over 70 °C
 [ ] Logs inspected before fitting (motion, decay, supply voltage)
 [ ] bam.check_logs run, CSV kept, flagged logs moved aside (not deleted)
-[ ] free-swing period in `lift_and_drop` checked against the measured mass and length (§6.4)
+[ ] free-swing armature consistent across configurations (§6.4); rerun with --armature after the fit
+[ ] applied PWM / predicted PWM about 1.0 at every P gain (§9)
 [ ] Logs resampled with bam.process before fitting (§7.1)
 [ ] m4 and m1 fitted with kp 400 held out; both validation scores kept (§7.2)
-[ ] Fitted stall torque and no-load speed compared against the catalogue
+[ ] bam.catalog_check within ±20 % of the catalogue, friction included (§8.1)
 [ ] No fitted parameter on the edge of its range, or the ones that are reported
 [ ] kt and R checked for drift across P gains (§7.3, §9)
 [ ] Everything in §7.4 handed in, with the commit hash

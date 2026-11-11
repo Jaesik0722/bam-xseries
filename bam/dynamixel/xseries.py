@@ -110,21 +110,23 @@ ADDR_POSITION_D_GAIN = 80     # 2 bytes
 ADDR_POSITION_I_GAIN = 82     # 2 bytes
 ADDR_POSITION_P_GAIN = 84     # 2 bytes
 ADDR_GOAL_POSITION = 116      # 4 bytes, 1 pulse
+ADDR_PRESENT_PWM = 124        # 2 bytes, 0.113 % (885 = 100 %)
 ADDR_PRESENT_CURRENT = 126    # 2 bytes, 2.69 mA
 ADDR_PRESENT_VELOCITY = 128   # 4 bytes, 0.229 rev/min
 ADDR_PRESENT_POSITION = 132   # 4 bytes, 1 pulse
 ADDR_PRESENT_INPUT_VOLTAGE = 144  # 2 bytes, 0.1 V
 ADDR_PRESENT_TEMPERATURE = 146    # 1 byte, 1 degC
 
-# A single contiguous read from Present Current through Present Temperature keeps the
-# sample atomic: position, velocity and temperature then belong to the same control cycle.
-ADDR_READ_BLOCK = ADDR_PRESENT_CURRENT
-LEN_READ_BLOCK = ADDR_PRESENT_TEMPERATURE - ADDR_PRESENT_CURRENT + 1  # 21 bytes
+# A single contiguous read from Present PWM through Present Temperature keeps the sample
+# atomic: PWM, position, velocity and temperature then belong to the same control cycle.
+ADDR_READ_BLOCK = ADDR_PRESENT_PWM
+LEN_READ_BLOCK = ADDR_PRESENT_TEMPERATURE - ADDR_PRESENT_PWM + 1  # 23 bytes
 
 COUNTS_PER_REV = 4096
 CURRENT_UNIT_A = 2.69e-3            # A per count
 VELOCITY_UNIT_RAD_S = 0.229 * 2 * np.pi / 60.0
 VOLTAGE_UNIT_V = 0.1
+PWM_FULL_SCALE = 885                # Present PWM count at 100 % duty
 
 
 def _signed(value: int, bits: int) -> int:
@@ -209,12 +211,14 @@ class DynamixelXSeries:
 
     # -- logging ------------------------------------------------------------------------
     def read_data(self) -> dict:
-        """One sample: position, speed, load, input voltage and temperature.
+        """One sample: position, speed, load, PWM, input voltage and temperature.
 
         ``load`` is the measured current in amperes rather than the Protocol 1.0 "load"
-        percentage, which the X series does not provide. The identification does not use
-        this channel, but it is recorded because it makes an independent check of the
-        fitted torque constant possible afterwards.
+        percentage, which the X series does not provide. ``pwm`` is the duty cycle the
+        firmware applied, as a signed fraction of full scale. The identification uses
+        neither channel. ``load`` makes an independent check of the fitted torque constant
+        possible afterwards, and ``pwm`` against the position error checks ``error_gain``
+        directly (PROTOCOL.md section 9).
         """
         data, result, error = self.packetHandler.readTxRx(
             self.portHandler, self.id, ADDR_READ_BLOCK, LEN_READ_BLOCK)
@@ -227,6 +231,7 @@ class DynamixelXSeries:
             return int.from_bytes(bytes(data[offset:offset + size]), "little")
 
         base = ADDR_READ_BLOCK
+        pwm = _signed(word(ADDR_PRESENT_PWM - base, 2), 16) / PWM_FULL_SCALE
         current = _signed(word(ADDR_PRESENT_CURRENT - base, 2), 16) * CURRENT_UNIT_A
         velocity = _signed(word(ADDR_PRESENT_VELOCITY - base, 4), 32) * VELOCITY_UNIT_RAD_S
         position = word(ADDR_PRESENT_POSITION - base, 4)
@@ -238,6 +243,7 @@ class DynamixelXSeries:
             "position": position,
             "speed": velocity,
             "load": current,
+            "pwm": pwm,
             "input_volts": volts,
             "temp": temp,
         }
