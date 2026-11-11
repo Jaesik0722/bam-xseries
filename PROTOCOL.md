@@ -25,13 +25,10 @@ bench is the long pole.
 | Actuators | XH540-W270, XM540-W270, XM430-W350 | one of each; they are identified separately |
 | Power supply | **14.8 V**, 6 A or more | the top of the 10.0–14.8 V input range of all three models; XH540 is rated 5.9 A at stall at this voltage |
 | Interface | U2D2 + U2D2 Power Hub Board | USB to TTL/RS-485 |
-| Aluminium profile | 20×20 or 30×30 mm, ~30 cm | the mast the actuator hangs from |
 | Bench vice or C-clamps | — | clamps the profile to the table |
 | Mounting bracket | 3D printed or machined, actuator-specific | see §2 |
 | Pendulum arms | 3 lengths: 100, 150, 200 mm | see §2 |
 | Weights | 0.2, 0.5, 1.2, 1.5, 3.0 kg | drilled and tapped, bolted to the arm end |
-| Bolt | M8 × 40 or similar | holds the weight to the arm |
-| Kitchen or lab scale | 1 g resolution | you must weigh everything |
 | Ruler or calipers | 1 mm resolution | |
 
 A reference design for the arms is published by the BAM authors as a parametric Onshape
