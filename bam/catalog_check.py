@@ -109,16 +109,39 @@ def noload_equilibria(model, kt: float, R: float, vin: float, samples=4000) -> l
     return roots
 
 
+def noload_timestep(model, kt: float, R: float, vin: float, armature: float,
+                    dt_max=1e-4, fraction=0.1, samples=200) -> float:
+    """Timestep for the no-load simulation, a fraction of the mechanical time constant.
+
+    The unloaded output has only the armature as inertia, so with a small armature the
+    time constant armature / (kt^2/R + viscous) can be shorter than a fixed timestep. The
+    explicit update is unstable beyond twice the time constant: the speed then flips
+    between two values from one step to the next instead of settling.
+    """
+    damping = 0.0
+    for speed in np.linspace(0.0, vin / kt, samples):
+        tau_m = kt * (vin - kt * speed) / R
+        damping = max(damping, model.compute_frictions(tau_m, 0.0, speed)[1])
+    return min(dt_max, fraction * armature / (kt**2 / R + damping))
+
+
 def predicted_noload_speed(model, kt: float, R: float, vin: float, armature: float,
-                           dt=1e-4, window=0.5, max_time=60.0,
-                           rtol=1e-4) -> tuple[float, bool]:
+                           dt=None, window=0.5, max_time=60.0,
+                           rtol=1e-4, torque_tol=1e-3) -> tuple[float, bool]:
     """Speed reached from rest at full duty with no load (bam.simulate's friction rule).
 
-    Integrates until the speed changes by less than `rtol` (relative) over `window`
-    seconds, up to `max_time`. Returns (speed, converged).
+    Integrates until, over a whole `window` seconds, the speed stays within `rtol`
+    (relative) of its mean and the torque balance at that speed is within `torque_tol`
+    of kt*V/R; up to `max_time`. Checking every sample of the window, not only its ends,
+    keeps an oscillation from passing as a steady state. The default timestep follows
+    `noload_timestep`. Returns (speed, converged).
     """
-    speed, reference = 0.0, None
-    steps_per_window = int(round(window / dt))
+    if dt is None:
+        dt = noload_timestep(model, kt, R, vin, armature)
+    tolerance = torque_tol * kt * vin / R
+    speed = 0.0
+    low, high = np.inf, -np.inf
+    steps_per_window = max(1, int(round(window / dt)))
     for step in range(1, int(max_time / dt) + 1):
         tau_m = kt * (vin - kt * speed) / R
         frictionloss, damping = model.compute_frictions(tau_m, 0.0, speed)
@@ -126,10 +149,15 @@ def predicted_noload_speed(model, kt: float, R: float, vin: float, armature: flo
         friction = -np.sign(tau_stop) * min(abs(tau_stop),
                                             frictionloss + damping * abs(speed))
         speed += (tau_m + friction) / armature * dt
+        low, high = min(low, speed), max(high, speed)
         if step % steps_per_window == 0:
-            if reference is not None and abs(speed - reference) <= rtol * max(abs(speed), 1e-9):
+            steady = high - low <= rtol * max(abs(speed), 1e-9)
+            residual = noload_margin(model, kt, R, vin, speed)
+            # At rest, static friction may hold the output: a deficit is then balanced.
+            balanced = abs(residual) <= tolerance or (speed == 0.0 and residual <= 0.0)
+            if steady and balanced:
                 return float(speed), True
-            reference = speed
+            low, high = np.inf, -np.inf
     return float(speed), False
 
 
@@ -171,8 +199,9 @@ def main():
         print(f"{name:16}{value:10.3f}{reference:11.3f}{100 * diff:+8.1f}%"
               f"{ideal:15.3f}  {unit}{mark}")
     if not converged:
-        print("\nnote: the no-load simulation had not settled after 60 s; the speed above "
-              "is a lower bound, not a steady state")
+        print("\nnote: the no-load simulation had not settled after 60 s (speed still "
+              "changing within the last 0.5 s, or torque balance not met); the speed above "
+              "is not a steady state")
         failed = True
     if len(roots) > 1:
         print("\nnote: the no-load torque balance has several roots, "
